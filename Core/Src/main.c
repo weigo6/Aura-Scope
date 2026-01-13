@@ -56,15 +56,6 @@ volatile uint8_t key_pressed = 0;
 volatile int8_t encoder_delta = 0;
 volatile uint32_t last_button_press_time = 0;
 
-// Frequency Measurement
-volatile uint32_t tim2_overflows = 0;
-volatile uint32_t tim3_overflows = 0;
-volatile uint32_t last_capture_overflow_ch1 = 0;
-volatile uint32_t last_capture_overflow_ch2 = 0;
-volatile uint32_t tim2_ic_val = 0;
-volatile uint32_t tim3_ic_val = 0;
-float osc_freq_ch1 = 0.0f;
-float osc_freq_ch2 = 0.0f;
 float osc_vpp_ch1 = 0.0f;
 float osc_vpp_ch2 = 0.0f;
 /* USER CODE END PV */
@@ -143,11 +134,6 @@ int main(void)
   HAL_TIM_Base_Start(&htim1);
   HAL_TIM_OC_Start(&htim1, TIM_CHANNEL_1);
   
-  HAL_TIM_Base_Start_IT(&htim3); // Start TIM3 Base (for overflow interrupt)
-  HAL_TIM_IC_Start_IT(&htim3, TIM_CHANNEL_1); // Start TIM3 IC
-  
-  // TIM2 is managed by SignalGen (starts Base_IT), but we need IC
-  HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_2); 
 
   // Start Oscilloscope ADC
   OSC_Start();
@@ -284,66 +270,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
     if (htim->Instance == TIM2) {
-        tim2_overflows++;
         SignalGen_TIM_PeriodElapsedCallback(htim);
-        
-        // Timeout check for CH2 (approx 1s if fast overflow, depends on ARR)
-        if (tim2_overflows - last_capture_overflow_ch2 > 50) {
-            osc_freq_ch2 = 0.0f;
-        }
-    }
-    else if (htim->Instance == TIM3) {
-        tim3_overflows++;
-        // Timeout check for CH1 (1MHz clock, 65536 period -> ~65ms per overflow)
-        // 20 overflows ~= 1.3 seconds
-        if (tim3_overflows - last_capture_overflow_ch1 > 20) {
-            osc_freq_ch1 = 0.0f;
-        }
-    }
-}
-
-void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
-{
-    if (htim->Instance == TIM3 && htim->Channel == HAL_TIM_ACTIVE_CHANNEL_1) {
-        // CH1 (PA6) Capture
-        uint32_t current_val = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
-        
-        static uint32_t last_total_ticks_ch1 = 0;
-        uint32_t total_ticks = (tim3_overflows * 65536) + current_val;
-        uint32_t diff = total_ticks - last_total_ticks_ch1;
-        
-        last_total_ticks_ch1 = total_ticks;
-        last_capture_overflow_ch1 = tim3_overflows;
-        
-        if (diff > 0) {
-            osc_freq_ch1 = 1000000.0f / diff; // 1MHz clock
-        }
-    }
-    else if (htim->Instance == TIM2 && htim->Channel == HAL_TIM_ACTIVE_CHANNEL_2) {
-        // CH2 (PA1) Capture
-        uint32_t current_val = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_2);
-        
-        // Handle SignalGen Dynamic ARR?
-        // If Square Wave mode: PSC/ARR set by Freq.
-        // If SPWM mode: PSC=0, ARR=3599 (20kHz).
-        // Frequency = (Clock / (PSC+1)) / diff_ticks
-        
-        uint32_t psc = TIM2->PSC;
-        // Handle variable ARR wraparounds.
-        // total = overflows * (ARR + 1) + CNT.
-        uint32_t period = TIM2->ARR + 1;
-        
-        static uint32_t last_total_ticks_ch2 = 0;
-        uint32_t total_ticks = (tim2_overflows * period) + current_val;
-        uint32_t diff = total_ticks - last_total_ticks_ch2;
-        
-        last_total_ticks_ch2 = total_ticks;
-        last_capture_overflow_ch2 = tim2_overflows;
-        
-        if (diff > 0) {
-            uint32_t tim_clk = SystemCoreClock / (psc + 1); // 72MHz / ...
-            osc_freq_ch2 = (float)tim_clk / diff;
-        }
     }
 }
 

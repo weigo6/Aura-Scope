@@ -42,17 +42,15 @@ static TimebaseConfig_t timebase_configs[] = {
 #define TIMEBASE_NUM (sizeof(timebase_configs)/sizeof(TimebaseConfig_t))
 static int8_t timebase_idx = 2; // Default 100k
 
-static uint16_t oldWaveCH1[OSC_WAVE_WIDTH];
-static uint16_t newWaveCH1[OSC_WAVE_WIDTH];
-static uint16_t oldWaveCH2[OSC_WAVE_WIDTH];
-static uint16_t newWaveCH2[OSC_WAVE_WIDTH];
+static uint16_t oldWaveCH1[OSC_WAVE_DRAW_WIDTH];
+static uint16_t newWaveCH1[OSC_WAVE_DRAW_WIDTH];
+static uint16_t oldWaveCH2[OSC_WAVE_DRAW_WIDTH];
+static uint16_t newWaveCH2[OSC_WAVE_DRAW_WIDTH];
 
 static float vpp_ch1 = 0.0f;
 static float vpp_ch2 = 0.0f;
 
 // 外部变量 (由main.c维护)
-extern float osc_freq_ch1;
-extern float osc_freq_ch2;
 extern TIM_HandleTypeDef htim1;
 
 // 触发阈值 (ADC值)
@@ -94,10 +92,10 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
 // ADC=4095 -> Vin=-80V (Low) -> Bottom
 // 形状和方向与 x1 模式一致，只是数值比例不同
 static uint16_t ADC2Y(uint16_t adc_val) {
-    uint16_t height = OSC_WAVE_HEIGHT; // 比如 100
-    uint16_t y = (adc_val * height) / 4096;
-    if (y > height) y = height;
-    return OSC_WAVE_TOP_Y + y;
+    // 限制波形在 [OSC_WAVE_TOP_Y + 1, OSC_WAVE_BOTTOM_Y - 1] 之间，防止破坏上下边框
+    uint16_t draw_height = OSC_WAVE_HEIGHT - 2; 
+    uint16_t y = (adc_val * draw_height) / 4096;
+    return OSC_WAVE_TOP_Y + 1 + y;
 }
 
 void OSC_Process(void) {
@@ -142,8 +140,8 @@ void OSC_Process(void) {
                 }
             }
             
-            // 3. 准备波形数据
-            for (int i = 0; i < OSC_WAVE_WIDTH; i++) {
+            // 3. 准备波形数据 (仅采集绘制区域宽度的数据)
+            for (int i = 0; i < OSC_WAVE_DRAW_WIDTH; i++) {
                 uint32_t idx = t + i * step;
                 if (idx >= OSC_ADC_NUM) idx = OSC_ADC_NUM - 1;
                 
@@ -159,25 +157,30 @@ void OSC_Process(void) {
 
 void OSC_DrawWaveform(void) {
     if (osc_state == OSC_RUN) {
-        for (int i = 1; i < OSC_WAVE_WIDTH; i++) {
-            // 始终擦除旧波形 (防止切换通道时残留)
-            ST7735_DrawLine(i-1, oldWaveCH1[i-1], i, oldWaveCH1[i], ST7735_BLACK);
-            ST7735_DrawLine(i-1, oldWaveCH2[i-1], i, oldWaveCH2[i], ST7735_BLACK);
+        // 在 (1, OSC_WAVE_DRAW_WIDTH-1) 范围内绘制波形连接线，避免触碰 0 和 159 像素列
+        // 实际绘制位置偏移 +1 像素
+        for (int i = 1; i < OSC_WAVE_DRAW_WIDTH; i++) {
+            // 1. 始终擦除旧波形
+            ST7735_DrawLine(i, oldWaveCH1[i-1], i + 1, oldWaveCH1[i], ST7735_BLACK);
+            ST7735_DrawLine(i, oldWaveCH2[i-1], i + 1, oldWaveCH2[i], ST7735_BLACK);
             
-            // 绘制新波形 (仅绘制当前启用的通道)
+            // 2. 绘制新波形 (仅绘制当前启用的通道)
             if (osc_mode == OSC_MODE_CH1 || osc_mode == OSC_MODE_DUAL) {
-                ST7735_DrawLine(i-1, newWaveCH1[i-1], i, newWaveCH1[i], ST7735_GREEN);
+                ST7735_DrawLine(i, newWaveCH1[i-1], i + 1, newWaveCH1[i], ST7735_GREEN);
             }
             if (osc_mode == OSC_MODE_CH2 || osc_mode == OSC_MODE_DUAL) {
-                ST7735_DrawLine(i-1, newWaveCH2[i-1], i, newWaveCH2[i], ST7735_YELLOW);
+                ST7735_DrawLine(i, newWaveCH2[i-1], i + 1, newWaveCH2[i], ST7735_YELLOW);
             }
             
             // 更新旧数据
             oldWaveCH1[i-1] = newWaveCH1[i-1];
             oldWaveCH2[i-1] = newWaveCH2[i-1];
         }
-        oldWaveCH1[OSC_WAVE_WIDTH-1] = newWaveCH1[OSC_WAVE_WIDTH-1];
-        oldWaveCH2[OSC_WAVE_WIDTH-1] = newWaveCH2[OSC_WAVE_WIDTH-1];
+        oldWaveCH1[OSC_WAVE_DRAW_WIDTH-1] = newWaveCH1[OSC_WAVE_DRAW_WIDTH-1];
+        oldWaveCH2[OSC_WAVE_DRAW_WIDTH-1] = newWaveCH2[OSC_WAVE_DRAW_WIDTH-1];
+
+        // 不再需要在这里手动恢复边框，UI_DrawOscilloscope 会在需要时处理
+        // 或者如果波形可能触碰上下边框，可以在 ADC2Y 中进一步限制范围
     }
 }
 
@@ -230,9 +233,4 @@ uint8_t OSC_GetAttenuation(void) {
 float OSC_GetVpp(uint8_t channel) {
     if (channel == 0) return vpp_ch1;
     return vpp_ch2;
-}
-
-float OSC_GetFreq(uint8_t channel) {
-    if (channel == 0) return osc_freq_ch1;
-    return osc_freq_ch2;
 }

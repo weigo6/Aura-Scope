@@ -14,6 +14,11 @@ static UI_State_t current_ui_state = UI_STATE_WELCOME;
 static UI_State_t last_ui_state = UI_STATE_COUNT;
 static uint8_t ui_full_redraw = 0;
 
+// 缓存上一次显示的数值，用于减少频闪
+static int last_v1_int = -1, last_v1_frac = -1;
+static int last_v2_int = -1, last_v2_frac = -1;
+static OscMode_t last_osc_mode_bottom = OSC_MODE_COUNT;
+
 typedef enum {
     PARAM_FREQUENCY = 0,
     PARAM_DUTY_CYCLE,
@@ -25,15 +30,6 @@ static SigGen_Param_t sig_gen_selected_param = PARAM_FREQUENCY;
 // For Oscilloscope anti-flicker
 #define ADC_BUFFER_SIZE 1000
 
-static void FormatFreq(float freq, char *buf, size_t size) {
-    if (freq < 1000) {
-        snprintf(buf, size, "%3.0fHz", freq); // 999Hz
-    } else if (freq < 100000) {
-        snprintf(buf, size, "%2.1fkHz", freq / 1000.0f); // 99.9kHz
-    } else {
-        snprintf(buf, size, "%3.0fkHz", freq / 1000.0f); // 999kHz
-    }
-}
 
 /**
   * @brief UI 初始化
@@ -120,20 +116,48 @@ void UI_DrawWelcome(void)
 }
 
 /**
+  * @brief 绘制波形背景网格
+  */
+void UI_DrawGrid(void)
+{
+    // 绘制垂直网格线 (每 20 像素一根)
+    for (uint16_t x = 20; x < ST7735_WIDTH - 1; x += 20) {
+        for (uint16_t y = OSC_WAVE_TOP_Y + 1; y < OSC_WAVE_BOTTOM_Y; y += 4) {
+            ST7735_DrawPixel(x, y, 0x2104); // 使用深灰色虚线 (RGB565: 4,4,4)
+        }
+    }
+
+    // 绘制水平网格线 (每 18 像素一根，正好 5 个区间对应 90 像素高度)
+    for (uint16_t y = OSC_WAVE_TOP_Y + 18; y < OSC_WAVE_BOTTOM_Y; y += 18) {
+        for (uint16_t x = 1; x < ST7735_WIDTH - 1; x += 4) {
+            ST7735_DrawPixel(x, y, 0x2104); // 使用深灰色虚线
+        }
+    }
+
+    // 绘制中心十字轴 (实线)
+    ST7735_DrawLine(ST7735_WIDTH / 2, OSC_WAVE_TOP_Y + 1, ST7735_WIDTH / 2, OSC_WAVE_BOTTOM_Y - 1, 0x3186);
+    ST7735_DrawLine(1, OSC_WAVE_TOP_Y + OSC_WAVE_HEIGHT / 2, ST7735_WIDTH - 2, OSC_WAVE_TOP_Y + OSC_WAVE_HEIGHT / 2, 0x3186);
+}
+
+/**
   * @brief 绘制示波器界面
   */
 void UI_DrawOscilloscope(void)
 {
     // 绘制坐标网格 (仅在完全重绘时绘制)
     if (ui_full_redraw) {
-        // 波形区域高度调整为 100 (20-120)
-        ST7735_DrawRect(0, OSC_WAVE_TOP_Y, ST7735_WIDTH-1, OSC_WAVE_BOTTOM_Y, ST7735_GRAY);
-        // 中心线
-        ST7735_DrawLine(0, OSC_WAVE_TOP_Y + OSC_WAVE_HEIGHT/2, ST7735_WIDTH-1, OSC_WAVE_TOP_Y + OSC_WAVE_HEIGHT/2, ST7735_GRAY);
+        // 绘制波形外框 (0, 20) 到 (159, 110)
+        ST7735_DrawRect(0, OSC_WAVE_TOP_Y, ST7735_WIDTH - 1, OSC_WAVE_BOTTOM_Y, ST7735_GRAY);
+        // 绘制内部网格
+        UI_DrawGrid();
     }
     
     // 调用 OSC_App 进行波形绘制
     OSC_DrawWaveform();
+
+    // 每一帧都强制恢复一次左右边框，防止极端情况下的溢出
+    ST7735_DrawLine(0, OSC_WAVE_TOP_Y, 0, OSC_WAVE_BOTTOM_Y, ST7735_GRAY);
+    ST7735_DrawLine(ST7735_WIDTH - 1, OSC_WAVE_TOP_Y, ST7735_WIDTH - 1, OSC_WAVE_BOTTOM_Y, ST7735_GRAY);
     
     // 更新状态显示 (顶部状态栏 Y=2)
     char buf[32];
@@ -159,52 +183,46 @@ void UI_DrawOscilloscope(void)
 
     // 更新底部信息 (底部栏 Y=112)
     float vpp1 = OSC_GetVpp(0);
-    float freq1 = OSC_GetFreq(0);
     float vpp2 = OSC_GetVpp(1);
-    float freq2 = OSC_GetFreq(1);
-    
-    char freq_str[10];
-    
-    // 移除 FillRect 以避免闪烁，改用空格补齐清除旧字符
+    int v1_int = (int)vpp1, v1_frac = (int)((vpp1 - v1_int) * 100);
+    int v2_int = (int)vpp2, v2_frac = (int)((vpp2 - v2_int) * 100);
 
-    if (osc_mode == OSC_MODE_CH1) {
-        // CH1 独占: "CH1: 3.30V 1.0kHz    " (补齐到20字符)
-        int v_int = (int)vpp1;
-        int v_frac = (int)((vpp1 - v_int) * 100);
-        FormatFreq(freq1, freq_str, sizeof(freq_str));
-        // %-20s 在右侧补空格 (需配合临时buffer)
-        char tmp[24];
-        snprintf(tmp, sizeof(tmp), "CH1: %d.%02dV %s", v_int, v_frac, freq_str);
-        snprintf(buf, sizeof(buf), "%-20s", tmp); 
-        ST7735_DrawString(0, 112, buf, ST7735_GREEN, ST7735_BLACK);
-    }
-    else if (osc_mode == OSC_MODE_CH2) {
-        int v_int = (int)vpp2;
-        int v_frac = (int)((vpp2 - v_int) * 100);
-        FormatFreq(freq2, freq_str, sizeof(freq_str));
-        char tmp[24];
-        snprintf(tmp, sizeof(tmp), "CH2: %d.%02dV %s", v_int, v_frac, freq_str);
-        snprintf(buf, sizeof(buf), "%-20s", tmp);
-        ST7735_DrawString(0, 112, buf, ST7735_CYAN, ST7735_BLACK);
-    }
-    else {
-        // Dual Mode
-        // CH1 Left (10 chars width)
-        int v_int1 = (int)vpp1;
-        int v_frac1 = (int)((vpp1 - v_int1) * 10);
-        FormatFreq(freq1, freq_str, sizeof(freq_str));
-        char tmp[16];
-        snprintf(tmp, sizeof(tmp), "%d.%dV %s", v_int1, v_frac1, freq_str);
-        snprintf(buf, sizeof(buf), "%-10s", tmp); // Pad to 10 chars
-        ST7735_DrawString(0, 112, buf, ST7735_GREEN, ST7735_BLACK);
-        
-        // CH2 Right (10 chars width)
-        int v_int2 = (int)vpp2;
-        int v_frac2 = (int)((vpp2 - v_int2) * 10);
-        FormatFreq(freq2, freq_str, sizeof(freq_str));
-        snprintf(tmp, sizeof(tmp), "%d.%dV %s", v_int2, v_frac2, freq_str);
-        snprintf(buf, sizeof(buf), "%-10s", tmp);
-        ST7735_DrawString(80, 112, buf, ST7735_CYAN, ST7735_BLACK);
+    // 仅在数值变化或模式切换时刷新，避免每帧重绘导致的频闪
+    if (osc_mode != last_osc_mode_bottom || 
+        v1_int != last_v1_int || v1_frac != last_v1_frac ||
+        v2_int != last_v2_int || v2_frac != last_v2_frac) 
+    {
+        if (osc_mode == OSC_MODE_CH1) {
+            char tmp[24];
+            snprintf(tmp, sizeof(tmp), "CH1:%d.%02dV", v1_int, v1_frac);
+            snprintf(buf, sizeof(buf), "%-12s", tmp);
+            ST7735_DrawString(0, 112, buf, ST7735_GREEN, ST7735_BLACK);
+        }
+        else if (osc_mode == OSC_MODE_CH2) {
+            char tmp[24];
+            snprintf(tmp, sizeof(tmp), "CH2:%d.%02dV", v2_int, v2_frac);
+            snprintf(buf, sizeof(buf), "%-12s", tmp);
+            ST7735_DrawString(0, 112, buf, ST7735_CYAN, ST7735_BLACK);
+        }
+        else {
+            // Dual Mode 并排显示 (模拟单通道逻辑，使用固定宽度覆盖)
+            char tmp1[16], tmp2[16];
+            char pad1[16], pad2[16];
+            
+            snprintf(tmp1, sizeof(tmp1), "CH1:%d.%02dV", v1_int, v1_frac);
+            snprintf(tmp2, sizeof(tmp2), "CH2:%d.%02dV", v2_int, v2_frac);
+            
+            // 使用 %-10s 确保每个部分都有固定宽度并自动补空格清空旧内容
+            snprintf(pad1, sizeof(pad1), "%-11s", tmp1);
+            snprintf(pad2, sizeof(pad2), "%-11s", tmp2);
+
+            ST7735_DrawString(0, 112, pad1, ST7735_GREEN, ST7735_BLACK);
+            ST7735_DrawString(85, 112, pad2, ST7735_CYAN, ST7735_BLACK);
+        }
+
+        last_v1_int = v1_int; last_v1_frac = v1_frac;
+        last_v2_int = v2_int; last_v2_frac = v2_frac;
+        last_osc_mode_bottom = osc_mode;
     }
 }
 

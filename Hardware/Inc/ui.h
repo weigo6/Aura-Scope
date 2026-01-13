@@ -62,6 +62,11 @@ void UI_DrawOscilloscope(void);
 void UI_DrawSignalGen(void);
 
 /**
+  * @brief 绘制波形背景网格
+  */
+void UI_DrawGrid(void);
+
+/**
   * @brief 处理按键事件
   * @param key_id 按键ID (1:KEY1, 2:KEY2, 3:KEY3, 4:KEY4)
   */
