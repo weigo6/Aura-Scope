@@ -52,6 +52,11 @@ uint8_t OSC_GetAttenuation(void); // 返回 1 或 50
 float OSC_GetVpp(uint8_t channel);
 uint32_t OSC_GetFrequency(uint8_t channel);
 
+// 发送数据到PC
+void OSC_SendDataToPC(void);
+void OSC_TogglePCDataOutput(void); // 切换是否输出数据到PC
+uint8_t OSC_IsPCDataOutputEnabled(void);
+
 // 切换底部信息显示模式 (Vpp / Freq)
 void OSC_ToggleInfoMode(void);
 // 获取当前底部信息显示模式 (0: Vpp, 1: Freq)

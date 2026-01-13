@@ -3,6 +3,7 @@
 #include "tim.h"
 #include "st7735.h"
 #include "signal_gen.h"
+#include "usbd_cdc_if.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -13,6 +14,7 @@ volatile uint8_t osc_adc_cplt_flag = 0;
 static OscState_t osc_state = OSC_RUN;
 static OscMode_t osc_mode = OSC_MODE_CH1;
 static uint8_t attenuation_x50 = 0; // 0: x1, 1: x50
+static uint8_t pc_data_output_enabled = 1; // 默认开启数据回传
 
 // 底部信息显示模式 (0: Vpp, 1: Freq)
 static uint8_t osc_info_mode = 0;
@@ -67,6 +69,7 @@ static float vpp_ch2 = 0.0f;
 
 // 外部变量 (由main.c维护)
 extern TIM_HandleTypeDef htim1;
+extern USBD_HandleTypeDef hUsbDeviceFS; // 引用 USB 设备句柄
 
 // 触发阈值 (ADC值)
 #define TRIG_THRESHOLD 2048
@@ -164,6 +167,11 @@ void OSC_Process(void) {
                 newWaveCH1[i] = ADC2Y(raw & 0xFFFF);
                 newWaveCH2[i] = ADC2Y((raw >> 16) & 0xFFFF);
             }
+
+            // 发送数据到PC (如果在运行且开启)
+            if (pc_data_output_enabled) {
+                OSC_SendDataToPC();
+            }
         }
         
         osc_adc_cplt_flag = 0;
@@ -252,6 +260,70 @@ float OSC_GetVpp(uint8_t channel) {
 uint32_t OSC_GetFrequency(uint8_t channel) {
     if (channel == 0) return freq_ch1;
     return freq_ch2;
+}
+
+void OSC_TogglePCDataOutput(void) {
+    pc_data_output_enabled = !pc_data_output_enabled;
+}
+
+uint8_t OSC_IsPCDataOutputEnabled(void) {
+    return pc_data_output_enabled;
+}
+
+void OSC_SendDataToPC(void) {
+    // 检查 USB 是否已配置且就绪
+    if (hUsbDeviceFS.dev_state != USBD_STATE_CONFIGURED) {
+        return;
+    }
+    
+    // 为了防止高采样率下(>100k)数据在发送过程中被DMA覆盖，
+    // 在发送前暂停采样定时器，发送完毕后恢复。
+    // 这实现了“快照发送”模式。
+    HAL_TIM_Base_Stop(&htim1);
+
+    // 协议升级：
+    // Frame Header: 0xAA 0x55 (2 bytes)
+    // Timebase Idx: 1 byte
+    // Data:         8000 bytes
+    
+    uint8_t header[3];
+    header[0] = 0xAA;
+    header[1] = 0x55;
+    header[2] = (uint8_t)timebase_idx;
+    
+    // 1. Send Header + Index with Timeout
+    uint32_t header_timeout = 5000;
+    while(CDC_Transmit_FS(header, 3) == USBD_BUSY && header_timeout > 0) {
+        header_timeout--;
+    }
+    if (header_timeout == 0) {
+        HAL_TIM_Base_Start(&htim1); // 超时恢复采样
+        return; 
+    }
+    
+    // 2. Send Data in Chunks
+    uint8_t* pData = (uint8_t*)osc_adc_buffer;
+    uint32_t remaining = OSC_ADC_NUM * 4;
+    uint32_t chunk_size = 1000; // Safe size within 1024 buffer
+    
+    while (remaining > 0) {
+        if (chunk_size > remaining) chunk_size = remaining;
+        
+        uint32_t timeout = 5000; // Simple timeout loop for each chunk
+        uint8_t status;
+        do {
+            status = CDC_Transmit_FS(pData, chunk_size);
+            timeout--;
+        } while (status == USBD_BUSY && timeout > 0);
+        
+        if (status != USBD_OK) break; // Error or Timeout
+        
+        pData += chunk_size;
+        remaining -= chunk_size;
+    }
+
+    // 恢复采样
+    HAL_TIM_Base_Start(&htim1);
 }
 
 // 中断回调函数
