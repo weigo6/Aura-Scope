@@ -201,11 +201,11 @@ void UI_DrawOscilloscope(void)
         v2_int != last_v2_int || v2_frac != last_v2_frac ||
         freq1 != last_freq1 || freq2 != last_freq2)
     {
-        char str_ch1[20], str_ch2[20];
+        char str_ch1[18], str_ch2[18];
         
         if (info_mode == 0) { // Vpp Mode
-            snprintf(str_ch1, sizeof(str_ch1), "CH1:%d.%02dV", v1_int, v1_frac);
-            snprintf(str_ch2, sizeof(str_ch2), "CH2:%d.%02dV", v2_int, v2_frac);
+            snprintf(str_ch1, sizeof(str_ch1), "C1:%d.%02dV", v1_int, v1_frac);
+            snprintf(str_ch2, sizeof(str_ch2), "C2:%d.%02dV", v2_int, v2_frac);
         } else { // Freq Mode
             // Format frequency: <1k: xxxHz, >=1k: x.xkHz (避免浮点printf)
             if (freq1 < 1000) snprintf(str_ch1, sizeof(str_ch1), "CH1:%luHz", freq1);
@@ -216,7 +216,7 @@ void UI_DrawOscilloscope(void)
         }
 
         // 构造最终显示字符串并填充空格
-        char pad1[16], pad2[16];
+        char pad1[18], pad2[18];
         snprintf(pad1, sizeof(pad1), "%-11s", str_ch1);
         snprintf(pad2, sizeof(pad2), "%-11s", str_ch2);
         
