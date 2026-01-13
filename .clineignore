@@ -1,0 +1,26 @@
+# 编译产物
+Build/
+Debug/
+Release/
+*.map
+*.elf
+*.bin
+*.hex
+
+# IDE/工具配置文件
+.mxproject
+.project
+.cproject
+.settings/
+.vscode/
+.git/
+cmake/
+
+# 静态库目录（如果不需要AI修改库源码，只看头文件即可）
+# 视情况决定是否取消注释，通常建议保留 Inc 排除 Src
+# Drivers/STM32*_HAL_Driver/Src/
+# Drivers/CMSIS/Device/
+Drivers/
+
+# 版本控制
+.git/

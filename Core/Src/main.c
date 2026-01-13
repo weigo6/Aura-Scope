@@ -1,0 +1,386 @@
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file           : main.c
+  * @brief          : Main program body
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2026 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+/* Includes ------------------------------------------------------------------*/
+#include "main.h"
+#include "adc.h"
+#include "dma.h"
+#include "spi.h"
+#include "tim.h"
+#include "usart.h"
+#include "usb_device.h"
+#include "gpio.h"
+
+/* Private includes ----------------------------------------------------------*/
+/* USER CODE BEGIN Includes */
+#include "string.h"
+#include "st7735.h"
+#include "ui.h"
+#include "signal_gen.h"
+#include "osc_app.h"
+/* USER CODE END Includes */
+
+/* Private typedef -----------------------------------------------------------*/
+/* USER CODE BEGIN PTD */
+/* USER CODE END PTD */
+
+/* Private define ------------------------------------------------------------*/
+/* USER CODE BEGIN PD */
+
+/* USER CODE END PD */
+
+/* Private macro -------------------------------------------------------------*/
+/* USER CODE BEGIN PM */
+
+/* USER CODE END PM */
+
+/* Private variables ---------------------------------------------------------*/
+
+/* USER CODE BEGIN PV */
+volatile uint8_t key_pressed = 0;
+volatile int8_t encoder_delta = 0;
+volatile uint32_t last_button_press_time = 0;
+
+// Frequency Measurement
+volatile uint32_t tim2_overflows = 0;
+volatile uint32_t tim3_overflows = 0;
+volatile uint32_t last_capture_overflow_ch1 = 0;
+volatile uint32_t last_capture_overflow_ch2 = 0;
+volatile uint32_t tim2_ic_val = 0;
+volatile uint32_t tim3_ic_val = 0;
+float osc_freq_ch1 = 0.0f;
+float osc_freq_ch2 = 0.0f;
+float osc_vpp_ch1 = 0.0f;
+float osc_vpp_ch2 = 0.0f;
+/* USER CODE END PV */
+
+/* Private function prototypes -----------------------------------------------*/
+void SystemClock_Config(void);
+/* USER CODE BEGIN PFP */
+/* USER CODE END PFP */
+
+/* Private user code ---------------------------------------------------------*/
+/* USER CODE BEGIN 0 */
+
+/* USER CODE END 0 */
+
+/**
+  * @brief  The application entry point.
+  * @retval int
+  */
+int main(void)
+{
+
+  /* USER CODE BEGIN 1 */
+
+  /* USER CODE END 1 */
+
+  /* MCU Configuration--------------------------------------------------------*/
+
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+  HAL_Init();
+
+  /* USER CODE BEGIN Init */
+
+  /* USER CODE END Init */
+
+  /* Configure the system clock */
+  SystemClock_Config();
+
+  /* USER CODE BEGIN SysInit */
+
+  /* USER CODE END SysInit */
+
+  /* Initialize all configured peripherals */
+  MX_GPIO_Init();
+  MX_DMA_Init();
+  MX_USART1_UART_Init();
+  MX_USART3_UART_Init();
+  MX_USB_DEVICE_Init();
+  MX_TIM2_Init();
+  MX_ADC1_Init();
+  MX_ADC2_Init();
+  MX_TIM3_Init();
+  MX_TIM1_Init();
+  MX_SPI1_Init();
+  /* USER CODE BEGIN 2 */
+  
+  MX_TIM1_Init();
+
+  // 初始化 ST7735 显示屏
+  ST7735_Init();
+  HAL_Delay(100);
+  
+  // 显示启动界面 (可选)
+  // ST7735_ShowSplashScreen();
+  // HAL_Delay(1000);
+  
+  // 初始化 UI
+  UI_Init();
+
+  // 初始化示波器核心
+  OSC_Init();
+  
+  // 上电后等待硬件信号稳定，防止误触发
+  HAL_Delay(200);
+
+  // Start Peripherals
+  HAL_TIM_Base_Start(&htim1);
+  HAL_TIM_OC_Start(&htim1, TIM_CHANNEL_1);
+  
+  HAL_TIM_Base_Start_IT(&htim3); // Start TIM3 Base (for overflow interrupt)
+  HAL_TIM_IC_Start_IT(&htim3, TIM_CHANNEL_1); // Start TIM3 IC
+  
+  // TIM2 is managed by SignalGen (starts Base_IT), but we need IC
+  HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_2); 
+
+  // Start Oscilloscope ADC
+  OSC_Start();
+
+  /* USER CODE END 2 */
+
+  /* Infinite loop */
+  /* USER CODE BEGIN WHILE */
+  while (1)
+  {
+    /* USER CODE END WHILE */
+
+    /* USER CODE BEGIN 3 */
+    // Process Oscilloscope Data (Trigger, Scaling, Vpp)
+    OSC_Process();
+    
+    // UI Refresh Loop
+    // 注意：UI_Refresh 仅在状态改变时重绘。
+    // 波形刷新需要显式调用 UI_Refresh 或者单独的波形刷新函数?
+    // UI_Refresh() 调用 UI_DrawOscilloscope() -> OSC_DrawWaveform()
+    // 所以在 osc_app.c 的 Process 之后调用 UI_Refresh() 即可
+    // 但为了性能，只有在 ADC 完成后才刷新
+    // Check internal state of OSC?
+    // 我们可以简单地周期性调用 UI_Refresh，或者根据 OSC 状态。
+    // 但由于 OSC_Process 清除 osc_adc_cplt_flag，我们在这里无法知道是否刚刚处理完。
+    // 简单起见，如果状态是 SCOPE 且运行中，我们调用 UI_Refresh。
+    // 或者更好：OSC_Process 返回 true 如果有新数据?
+    
+    // 目前 OSC_DrawWaveform 内部检查数据。
+    // 我们总是调用 UI_Refresh 来驱动动画?
+    UI_Refresh();
+
+    if (key_pressed) {
+        UI_HandleKey(key_pressed);
+        key_pressed = 0;
+        // UI_Refresh done above or here?
+        // UI_Refresh(); // Removed redundant refresh
+    }
+    if (encoder_delta != 0) {
+        UI_HandleEncoder(encoder_delta);
+        encoder_delta = 0;
+        UI_Refresh(); // Encoder changes params, need refresh
+    }
+    
+    HAL_Delay(50); // Frame rate limit ~20fps
+  }
+  /* USER CODE END 3 */
+}
+
+/**
+  * @brief System Clock Configuration
+  * @retval None
+  */
+void SystemClock_Config(void)
+{
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+  RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
+
+  /** Initializes the RCC Oscillators according to the specified parameters
+  * in the RCC_OscInitTypeDef structure.
+  */
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+  RCC_OscInitStruct.HSEPredivValue = RCC_HSE_PREDIV_DIV1;
+  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+  RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL9;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Initializes the CPU, AHB and APB buses clocks
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_ADC|RCC_PERIPHCLK_USB;
+  PeriphClkInit.AdcClockSelection = RCC_ADCPCLK2_DIV6;
+  PeriphClkInit.UsbClockSelection = RCC_USBCLKSOURCE_PLL_DIV1_5;
+  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/* USER CODE BEGIN 4 */
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+    uint32_t current_time = HAL_GetTick();
+    
+    // 按键消抖与处理
+    if (GPIO_Pin == GPIO_PIN_13 || GPIO_Pin == GPIO_PIN_14 || 
+        GPIO_Pin == GPIO_PIN_15 || GPIO_Pin == GPIO_PIN_8 || GPIO_Pin == GPIO_PIN_9) {
+            
+        if (current_time - last_button_press_time > 200) { // 200ms debounce
+            last_button_press_time = current_time;
+            if (GPIO_Pin == GPIO_PIN_13) key_pressed = 1;      // KEY1
+            else if (GPIO_Pin == GPIO_PIN_14) key_pressed = 2; // KEY2
+            else if (GPIO_Pin == GPIO_PIN_15) key_pressed = 3; // KEY3
+            else if (GPIO_Pin == GPIO_PIN_8) key_pressed = 4;  // KEY4
+            else if (GPIO_Pin == GPIO_PIN_9) key_pressed = 5;  // EC11 Button
+        }
+    }
+    
+    // 旋转编码器处理 (PB4: A, PB3: B)
+    // 假设 GPIO_MODE_IT_FALLING
+    else if (GPIO_Pin == GPIO_PIN_4) { // A Falling
+        if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_3) == GPIO_PIN_RESET) {
+            encoder_delta = 1; // CW
+        } else {
+            encoder_delta = -1; // CCW
+        }
+    }
+    else if (GPIO_Pin == GPIO_PIN_3) { // B Falling
+        if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_4) == GPIO_PIN_RESET) {
+            encoder_delta = -1; // CCW
+        } else {
+            encoder_delta = 1; // CW
+        }
+    }
+}
+
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+    if (htim->Instance == TIM2) {
+        tim2_overflows++;
+        SignalGen_TIM_PeriodElapsedCallback(htim);
+        
+        // Timeout check for CH2 (approx 1s if fast overflow, depends on ARR)
+        if (tim2_overflows - last_capture_overflow_ch2 > 50) {
+            osc_freq_ch2 = 0.0f;
+        }
+    }
+    else if (htim->Instance == TIM3) {
+        tim3_overflows++;
+        // Timeout check for CH1 (1MHz clock, 65536 period -> ~65ms per overflow)
+        // 20 overflows ~= 1.3 seconds
+        if (tim3_overflows - last_capture_overflow_ch1 > 20) {
+            osc_freq_ch1 = 0.0f;
+        }
+    }
+}
+
+void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
+{
+    if (htim->Instance == TIM3 && htim->Channel == HAL_TIM_ACTIVE_CHANNEL_1) {
+        // CH1 (PA6) Capture
+        uint32_t current_val = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
+        
+        static uint32_t last_total_ticks_ch1 = 0;
+        uint32_t total_ticks = (tim3_overflows * 65536) + current_val;
+        uint32_t diff = total_ticks - last_total_ticks_ch1;
+        
+        last_total_ticks_ch1 = total_ticks;
+        last_capture_overflow_ch1 = tim3_overflows;
+        
+        if (diff > 0) {
+            osc_freq_ch1 = 1000000.0f / diff; // 1MHz clock
+        }
+    }
+    else if (htim->Instance == TIM2 && htim->Channel == HAL_TIM_ACTIVE_CHANNEL_2) {
+        // CH2 (PA1) Capture
+        uint32_t current_val = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_2);
+        
+        // Handle SignalGen Dynamic ARR?
+        // If Square Wave mode: PSC/ARR set by Freq.
+        // If SPWM mode: PSC=0, ARR=3599 (20kHz).
+        // Frequency = (Clock / (PSC+1)) / diff_ticks
+        
+        uint32_t psc = TIM2->PSC;
+        // Handle variable ARR wraparounds.
+        // total = overflows * (ARR + 1) + CNT.
+        uint32_t period = TIM2->ARR + 1;
+        
+        static uint32_t last_total_ticks_ch2 = 0;
+        uint32_t total_ticks = (tim2_overflows * period) + current_val;
+        uint32_t diff = total_ticks - last_total_ticks_ch2;
+        
+        last_total_ticks_ch2 = total_ticks;
+        last_capture_overflow_ch2 = tim2_overflows;
+        
+        if (diff > 0) {
+            uint32_t tim_clk = SystemCoreClock / (psc + 1); // 72MHz / ...
+            osc_freq_ch2 = (float)tim_clk / diff;
+        }
+    }
+}
+
+// HAL_ADC_ConvCpltCallback moved to osc_app.c
+
+/* USER CODE BEGIN 4_Init */
+/* USER CODE END 4_Init */
+
+/* USER CODE END 4 */
+
+/**
+  * @brief  This function is executed in case of error occurrence.
+  * @retval None
+  */
+void Error_Handler(void)
+{
+  /* USER CODE BEGIN Error_Handler_Debug */
+  /* User can add his own implementation to report the HAL error return state */
+  __disable_irq();
+  while (1)
+  {
+  }
+  /* USER CODE END Error_Handler_Debug */
+}
+#ifdef USE_FULL_ASSERT
+/**
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
+void assert_failed(uint8_t *file, uint32_t line)
+{
+  /* USER CODE BEGIN 6 */
+  /* User can add his own implementation to report the file name and line number,
+     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
+  /* USER CODE END 6 */
+}
+#endif /* USE_FULL_ASSERT */

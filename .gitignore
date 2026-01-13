@@ -1,0 +1,45 @@
+# Build directories
+build/
+Debug/
+Release/
+bin/
+obj/
+
+# CMake
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# STM32CubeMX
+.mxproject
+mx.scratch
+*.ioc.bak
+
+# IDEs
+.vscode/
+.idea/
+.settings/
+.project
+.cproject
+*.launch
+
+# Binary/Object files
+*.elf
+*.bin
+*.hex
+*.map
+*.o
+*.obj
+*.dep
+*.d
+*.su
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Clang
+.clangd/
+.cache/
