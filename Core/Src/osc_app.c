@@ -14,6 +14,21 @@ static OscState_t osc_state = OSC_RUN;
 static OscMode_t osc_mode = OSC_MODE_CH1;
 static uint8_t attenuation_x50 = 0; // 0: x1, 1: x50
 
+// 底部信息显示模式 (0: Vpp, 1: Freq)
+static uint8_t osc_info_mode = 0;
+
+// 频率测量相关变量
+static volatile uint32_t tim3_overflow_count = 0;
+static volatile uint32_t tim2_overflow_count = 0;
+static volatile uint32_t last_capture_ch1 = 0;
+static volatile uint32_t last_overflow_ch1 = 0; // Snapshot of overflow at capture
+static volatile uint32_t last_capture_ch2 = 0;
+static volatile uint32_t last_overflow_ch2 = 0; // Snapshot of overflow at capture
+static volatile uint32_t freq_ch1 = 0;
+static volatile uint32_t freq_ch2 = 0;
+static volatile uint8_t  first_capture_ch1 = 1;
+static volatile uint8_t  first_capture_ch2 = 1;
+
 // Timebase Config
 typedef struct {
     uint16_t arr;
@@ -157,8 +172,7 @@ void OSC_Process(void) {
 
 void OSC_DrawWaveform(void) {
     if (osc_state == OSC_RUN) {
-        // 在 (1, OSC_WAVE_DRAW_WIDTH-1) 范围内绘制波形连接线，避免触碰 0 和 159 像素列
-        // 实际绘制位置偏移 +1 像素
+        // 在 (1, OSC_WAVE_DRAW_WIDTH-1) 范围内绘制波形连接线
         for (int i = 1; i < OSC_WAVE_DRAW_WIDTH; i++) {
             // 1. 始终擦除旧波形
             ST7735_DrawLine(i, oldWaveCH1[i-1], i + 1, oldWaveCH1[i], ST7735_BLACK);
@@ -178,9 +192,6 @@ void OSC_DrawWaveform(void) {
         }
         oldWaveCH1[OSC_WAVE_DRAW_WIDTH-1] = newWaveCH1[OSC_WAVE_DRAW_WIDTH-1];
         oldWaveCH2[OSC_WAVE_DRAW_WIDTH-1] = newWaveCH2[OSC_WAVE_DRAW_WIDTH-1];
-
-        // 不再需要在这里手动恢复边框，UI_DrawOscilloscope 会在需要时处理
-        // 或者如果波形可能触碰上下边框，可以在 ADC2Y 中进一步限制范围
     }
 }
 
@@ -203,17 +214,16 @@ void OSC_ToggleAttenuation(void) {
 
 void OSC_CycleChannelMode(void) {
     osc_mode = (OscMode_t)((osc_mode + 1) % OSC_MODE_COUNT);
-    // Note: UI needs to know about this change to refresh.
-    // Ideally UI should query this or we call UI_Refresh?
-    // But osc_app doesn't know UI.
-    // So UI should handle the key press and call this, then refresh itself.
+}
+
+void OSC_ToggleInfoMode(void) {
+    osc_info_mode = !osc_info_mode;
 }
 
 uint8_t OSC_GetStep(void) {
-    return timebase_configs[timebase_idx].step; // For display, maybe return index or name?
+    return timebase_configs[timebase_idx].step;
 }
 
-// Helper to get string name
 const char* OSC_GetTimebaseName(void) {
     return timebase_configs[timebase_idx].name;
 }
@@ -230,7 +240,93 @@ uint8_t OSC_GetAttenuation(void) {
     return attenuation_x50 ? 50 : 1;
 }
 
+uint8_t OSC_GetInfoMode(void) {
+    return osc_info_mode;
+}
+
 float OSC_GetVpp(uint8_t channel) {
     if (channel == 0) return vpp_ch1;
     return vpp_ch2;
+}
+
+uint32_t OSC_GetFrequency(uint8_t channel) {
+    if (channel == 0) return freq_ch1;
+    return freq_ch2;
+}
+
+// 中断回调函数
+void OSC_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
+    if (htim->Instance == TIM3) {
+        tim3_overflow_count++;
+    }
+    else if (htim->Instance == TIM2) {
+        tim2_overflow_count++;
+    }
+}
+
+void OSC_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
+    if (htim->Instance == TIM3) {
+        // CH1 Frequency (PA6)
+        if (htim->Channel == HAL_TIM_ACTIVE_CHANNEL_1) {
+            uint32_t CCR = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
+            uint32_t overflow = tim3_overflow_count;
+            
+            // 处理溢出中断竞争：如果捕获时Update标志已置位但中断未处理 (CCR很小)
+            if (__HAL_TIM_GET_FLAG(htim, TIM_FLAG_UPDATE) && (CCR < 0x8000)) {
+                overflow++;
+            }
+
+            if (first_capture_ch1) {
+                last_capture_ch1 = CCR;
+                last_overflow_ch1 = overflow;
+                first_capture_ch1 = 0;
+            } else {
+                // 计算间隔 Tick 数
+                // diff_overflow = overflow - last_overflow_ch1 (自动处理 wrapping)
+                uint32_t diff_overflow = overflow - last_overflow_ch1;
+                uint64_t ticks = (uint64_t)diff_overflow * 65536 + CCR - last_capture_ch1;
+                
+                // Clock = 1MHz
+                if (ticks > 0) {
+                    freq_ch1 = 1000000 / ticks;
+                }
+                
+                last_capture_ch1 = CCR;
+                last_overflow_ch1 = overflow;
+            }
+        }
+    }
+    else if (htim->Instance == TIM2) {
+        // CH2 Frequency (PA1) - Shared with Signal Gen (PWM)
+        if (htim->Channel == HAL_TIM_ACTIVE_CHANNEL_2) {
+            uint32_t CCR = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_2);
+            uint32_t overflow = tim2_overflow_count;
+            
+            uint32_t ARR = __HAL_TIM_GET_AUTORELOAD(htim);
+            uint32_t PSC = htim->Instance->PSC;
+            uint32_t clock_freq = 72000000 / (PSC + 1);
+            uint32_t period = ARR + 1;
+
+            if (__HAL_TIM_GET_FLAG(htim, TIM_FLAG_UPDATE) && (CCR < (period / 2))) {
+                overflow++;
+            }
+            
+            if (first_capture_ch2) {
+                last_capture_ch2 = CCR;
+                last_overflow_ch2 = overflow;
+                first_capture_ch2 = 0;
+            } else {
+                // 计算间隔 Tick 数
+                uint32_t diff_overflow = overflow - last_overflow_ch2;
+                uint64_t ticks = (uint64_t)diff_overflow * period + CCR - last_capture_ch2;
+                
+                if (ticks > 0) {
+                    freq_ch2 = clock_freq / ticks;
+                }
+                
+                last_capture_ch2 = CCR;
+                last_overflow_ch2 = overflow;
+            }
+        }
+    }
 }

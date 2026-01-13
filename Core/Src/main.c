@@ -134,6 +134,12 @@ int main(void)
   HAL_TIM_Base_Start(&htim1);
   HAL_TIM_OC_Start(&htim1, TIM_CHANNEL_1);
   
+  // Start Frequency Measurement (Input Capture)
+  HAL_TIM_IC_Start_IT(&htim3, TIM_CHANNEL_1); // CH1 Freq
+  HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_2); // CH2 Freq
+  // Note: TIM2 Base IT is started by SignalGen_Init -> SignalGen_ConfigHardware
+  // TIM3 Base IT needs to be started for overflow counting
+  HAL_TIM_Base_Start_IT(&htim3);
 
   // Start Oscilloscope ADC
   OSC_Start();
@@ -231,6 +237,10 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
+// Forward declaration
+void OSC_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim);
+void OSC_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim);
+
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
     uint32_t current_time = HAL_GetTick();
@@ -271,7 +281,16 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
     if (htim->Instance == TIM2) {
         SignalGen_TIM_PeriodElapsedCallback(htim);
+        OSC_TIM_PeriodElapsedCallback(htim);
     }
+    else if (htim->Instance == TIM3) {
+        OSC_TIM_PeriodElapsedCallback(htim);
+    }
+}
+
+void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
+{
+    OSC_TIM_IC_CaptureCallback(htim);
 }
 
 // HAL_ADC_ConvCpltCallback moved to osc_app.c

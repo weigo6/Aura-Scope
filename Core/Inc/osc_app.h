@@ -50,5 +50,14 @@ uint8_t OSC_GetAttenuation(void); // 返回 1 或 50
 
 // 数据获取函数 (供UI显示)
 float OSC_GetVpp(uint8_t channel);
+uint32_t OSC_GetFrequency(uint8_t channel);
+
+// 切换底部信息显示模式 (Vpp / Freq)
+void OSC_ToggleInfoMode(void);
+// 获取当前底部信息显示模式 (0: Vpp, 1: Freq)
+uint8_t OSC_GetInfoMode(void);
+
+// Input Capture Callbacks
+void OSC_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim);
 
 #endif /* __OSC_APP_H */

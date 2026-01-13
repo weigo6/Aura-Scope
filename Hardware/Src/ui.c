@@ -17,6 +17,9 @@ static uint8_t ui_full_redraw = 0;
 // 缓存上一次显示的数值，用于减少频闪
 static int last_v1_int = -1, last_v1_frac = -1;
 static int last_v2_int = -1, last_v2_frac = -1;
+static uint32_t last_freq1 = 0xFFFFFFFF;
+static uint32_t last_freq2 = 0xFFFFFFFF;
+static uint8_t last_info_mode = 0xFF;
 static OscMode_t last_osc_mode_bottom = OSC_MODE_COUNT;
 
 typedef enum {
@@ -184,44 +187,59 @@ void UI_DrawOscilloscope(void)
     // 更新底部信息 (底部栏 Y=112)
     float vpp1 = OSC_GetVpp(0);
     float vpp2 = OSC_GetVpp(1);
+    uint32_t freq1 = OSC_GetFrequency(0);
+    uint32_t freq2 = OSC_GetFrequency(1);
+    uint8_t info_mode = OSC_GetInfoMode();
+
     int v1_int = (int)vpp1, v1_frac = (int)((vpp1 - v1_int) * 100);
     int v2_int = (int)vpp2, v2_frac = (int)((vpp2 - v2_int) * 100);
 
-    // 仅在数值变化或模式切换时刷新，避免每帧重绘导致的频闪
-    if (osc_mode != last_osc_mode_bottom || 
+    // 检查是否需要刷新
+    if (osc_mode != last_osc_mode_bottom ||
+        info_mode != last_info_mode ||
         v1_int != last_v1_int || v1_frac != last_v1_frac ||
-        v2_int != last_v2_int || v2_frac != last_v2_frac) 
+        v2_int != last_v2_int || v2_frac != last_v2_frac ||
+        freq1 != last_freq1 || freq2 != last_freq2)
     {
+        char str_ch1[20], str_ch2[20];
+        
+        if (info_mode == 0) { // Vpp Mode
+            snprintf(str_ch1, sizeof(str_ch1), "CH1:%d.%02dV", v1_int, v1_frac);
+            snprintf(str_ch2, sizeof(str_ch2), "CH2:%d.%02dV", v2_int, v2_frac);
+        } else { // Freq Mode
+            // Format frequency: <1k: xxxHz, >=1k: x.xkHz (避免浮点printf)
+            if (freq1 < 1000) snprintf(str_ch1, sizeof(str_ch1), "CH1:%luHz", freq1);
+            else snprintf(str_ch1, sizeof(str_ch1), "CH1:%lu.%1lukHz", freq1/1000, (freq1%1000)/100);
+            
+            if (freq2 < 1000) snprintf(str_ch2, sizeof(str_ch2), "CH2:%luHz", freq2);
+            else snprintf(str_ch2, sizeof(str_ch2), "CH2:%lu.%1lukHz", freq2/1000, (freq2%1000)/100);
+        }
+
+        // 构造最终显示字符串并填充空格
+        char pad1[16], pad2[16];
+        snprintf(pad1, sizeof(pad1), "%-11s", str_ch1);
+        snprintf(pad2, sizeof(pad2), "%-11s", str_ch2);
+        
         if (osc_mode == OSC_MODE_CH1) {
-            char tmp[24];
-            snprintf(tmp, sizeof(tmp), "CH1:%d.%02dV", v1_int, v1_frac);
-            snprintf(buf, sizeof(buf), "%-12s", tmp);
-            ST7735_DrawString(0, 112, buf, ST7735_GREEN, ST7735_BLACK);
+            ST7735_DrawString(0, 112, pad1, ST7735_GREEN, ST7735_BLACK);
+            // 清除右侧可能存在的旧 CH2 (使用空格覆盖)
+            ST7735_DrawString(85, 112, "           ", ST7735_WHITE, ST7735_BLACK);
         }
         else if (osc_mode == OSC_MODE_CH2) {
-            char tmp[24];
-            snprintf(tmp, sizeof(tmp), "CH2:%d.%02dV", v2_int, v2_frac);
-            snprintf(buf, sizeof(buf), "%-12s", tmp);
-            ST7735_DrawString(0, 112, buf, ST7735_CYAN, ST7735_BLACK);
+            // 清除左侧可能存在的旧 CH1 (使用空格覆盖)
+            ST7735_DrawString(0, 112, "           ", ST7735_WHITE, ST7735_BLACK);
+            ST7735_DrawString(85, 112, pad2, ST7735_CYAN, ST7735_BLACK);
         }
         else {
-            // Dual Mode 并排显示 (模拟单通道逻辑，使用固定宽度覆盖)
-            char tmp1[16], tmp2[16];
-            char pad1[16], pad2[16];
-            
-            snprintf(tmp1, sizeof(tmp1), "CH1:%d.%02dV", v1_int, v1_frac);
-            snprintf(tmp2, sizeof(tmp2), "CH2:%d.%02dV", v2_int, v2_frac);
-            
-            // 使用 %-10s 确保每个部分都有固定宽度并自动补空格清空旧内容
-            snprintf(pad1, sizeof(pad1), "%-11s", tmp1);
-            snprintf(pad2, sizeof(pad2), "%-11s", tmp2);
-
             ST7735_DrawString(0, 112, pad1, ST7735_GREEN, ST7735_BLACK);
             ST7735_DrawString(85, 112, pad2, ST7735_CYAN, ST7735_BLACK);
         }
 
+        // 更新缓存
         last_v1_int = v1_int; last_v1_frac = v1_frac;
         last_v2_int = v2_int; last_v2_frac = v2_frac;
+        last_freq1 = freq1; last_freq2 = freq2;
+        last_info_mode = info_mode;
         last_osc_mode_bottom = osc_mode;
     }
 }
@@ -279,7 +297,9 @@ void UI_HandleKey(uint8_t key_id)
             ui_full_redraw = 1; // 强制刷新以更新布局
             UI_Refresh();
         } else if (key_id == 4) {
-            // KEY4: Unused currently (or extra function)
+            // KEY4: 切换底部信息显示 (Vpp / Freq)
+            OSC_ToggleInfoMode();
+            // 不需要全屏刷新，底部会自动更新
         } else if (key_id == 5) { // EC11 Button
             // EC11 Button: Pause
             OSC_TogglePause();
