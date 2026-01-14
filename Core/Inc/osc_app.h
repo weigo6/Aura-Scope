@@ -42,6 +42,8 @@ void OSC_ToggleAttenuation(void); // 切换衰减档位 (x1 / x50)
 void OSC_CycleChannelMode(void);  // 切换通道显示 (CH1 -> CH2 -> Dual)
 
 // 获取状态
+void OSC_ToggleCDC(void);
+uint8_t OSC_GetCDCState(void);
 uint8_t OSC_GetStep(void);
 const char* OSC_GetTimebaseName(void);
 OscState_t OSC_GetState(void);
@@ -51,11 +53,6 @@ uint8_t OSC_GetAttenuation(void); // 返回 1 或 50
 // 数据获取函数 (供UI显示)
 float OSC_GetVpp(uint8_t channel);
 uint32_t OSC_GetFrequency(uint8_t channel);
-
-// 发送数据到PC
-void OSC_SendDataToPC(void);
-void OSC_TogglePCDataOutput(void); // 切换是否输出数据到PC
-uint8_t OSC_IsPCDataOutputEnabled(void);
 
 // 切换底部信息显示模式 (Vpp / Freq)
 void OSC_ToggleInfoMode(void);

@@ -21,9 +21,11 @@ mx.scratch
 .vscode/
 .idea/
 .settings/
+.trae/
 .project
 .cproject
 *.launch
+.ignore
 
 # Binary/Object files
 *.elf

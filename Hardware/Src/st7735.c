@@ -19,6 +19,7 @@
 
 /* USER CODE BEGIN Includes */
 #include <string.h>
+#include <stdbool.h>
 #include "font.h"
 /* USER CODE END Includes */
 
@@ -88,6 +89,8 @@ static void ST7735_WriteCommand(uint8_t cmd);
 static void ST7735_WriteData(uint8_t data);
 static void ST7735_WriteData16(uint16_t data);
 void ST7735_WriteDataBuffer(uint16_t *data, uint32_t len);
+void ST7735_WriteDataBufferDMA(uint16_t *data, uint32_t len);
+bool ST7735_IsBusy(void);
 
 /* USER CODE BEGIN PFP */
 
@@ -163,6 +166,39 @@ void ST7735_WriteDataBuffer(uint16_t *data, uint32_t len)
     HAL_SPI_Transmit(&hspi1, buffer, byteLen, HAL_MAX_DELAY);
     
     ST7735_CS_HIGH(); // 片选禁用
+}
+
+/**
+  * @brief  使用 DMA 发送数据缓冲区到 ST7735 (非阻塞)
+  * @param  data: 数据缓冲区指针 (必须保持有效直到传输完成)
+  * @param  len: 数据长度（16位数据个数）
+  * @retval None
+  */
+void ST7735_WriteDataBufferDMA(uint16_t *data, uint32_t len)
+{
+    ST7735_DC_HIGH(); // 数据模式
+    ST7735_CS_LOW();  // 片选使能
+    
+    // 注意：STM32 是小端，ST7735 是大端。
+    // 如果传入的数据已经是大端字节序，则直接发送。
+    HAL_SPI_Transmit_DMA(&hspi1, (uint8_t *)data, len * 2);
+}
+
+/**
+  * @brief  检查 SPI 是否忙碌
+  * @retval bool: true 为忙碌
+  */
+bool ST7735_IsBusy(void)
+{
+    return (hspi1.State == HAL_SPI_STATE_BUSY_TX);
+}
+
+// 在 SPI 传输完成中断中拉高 CS
+void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi)
+{
+    if (hspi->Instance == SPI1) {
+        ST7735_CS_HIGH(); // 传输完成，拉高片选
+    }
 }
 
 /**

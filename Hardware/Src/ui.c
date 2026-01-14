@@ -20,6 +20,7 @@ static int last_v2_int = -1, last_v2_frac = -1;
 static uint32_t last_freq1 = 0xFFFFFFFF;
 static uint32_t last_freq2 = 0xFFFFFFFF;
 static uint8_t last_info_mode = 0xFF;
+static uint8_t last_cdc_state = 0xFF;
 static OscMode_t last_osc_mode_bottom = OSC_MODE_COUNT;
 
 typedef enum {
@@ -158,10 +159,10 @@ void UI_DrawOscilloscope(void)
     // 调用 OSC_App 进行波形绘制
     OSC_DrawWaveform();
 
-    // 每一帧都强制恢复一次左右边框，防止极端情况下的溢出
-    ST7735_DrawLine(0, OSC_WAVE_TOP_Y, 0, OSC_WAVE_BOTTOM_Y, ST7735_GRAY);
-    ST7735_DrawLine(ST7735_WIDTH - 1, OSC_WAVE_TOP_Y, ST7735_WIDTH - 1, OSC_WAVE_BOTTOM_Y, ST7735_GRAY);
-    
+    // 重要：在绘制顶部/底部文字前，确保波形 DMA 传输已完成
+    // 防止 SetWindow 命令与文字绘制冲突
+    while (ST7735_IsBusy());
+
     // 更新状态显示 (顶部状态栏 Y=2)
     char buf[32];
     OscMode_t osc_mode = OSC_GetChannelMode();
@@ -173,22 +174,26 @@ void UI_DrawOscilloscope(void)
         ST7735_DrawString(0, 2, "RUN ", ST7735_GREEN, ST7735_BLACK);
     }
     
-    // 1.5 USB 状态 (左中)
-    if (OSC_IsPCDataOutputEnabled()) {
-        ST7735_DrawString(35, 2, "USB", ST7735_CYAN, ST7735_BLACK);
-    } else {
-        ST7735_DrawString(35, 2, "USB", ST7735_GRAY, ST7735_BLACK);
-    }
-
     // 2. 时基 (中)
     snprintf(buf, sizeof(buf), "%s  ", OSC_GetTimebaseName()); 
     ST7735_DrawString(64, 2, buf, ST7735_YELLOW, ST7735_BLACK);
 
     // 3. 衰减档位 (右)
     if (OSC_GetAttenuation() == 50) {
-        ST7735_DrawString(136, 2, "x50", ST7735_RED, ST7735_BLACK);
+        ST7735_DrawString(100, 2, "x50", ST7735_RED, ST7735_BLACK);
     } else {
-        ST7735_DrawString(136, 2, "x1 ", ST7735_GREEN, ST7735_BLACK);
+        ST7735_DrawString(100, 2, "x1 ", ST7735_GREEN, ST7735_BLACK);
+    }
+
+    // 4. USB CDC 状态 (最右侧)
+    uint8_t cdc_state = OSC_GetCDCState();
+    if (cdc_state != last_cdc_state || ui_full_redraw) {
+        if (cdc_state) {
+            ST7735_DrawString(130, 2, "USB", ST7735_CYAN, ST7735_BLACK);
+        } else {
+            ST7735_DrawString(130, 2, "---", ST7735_GRAY, ST7735_BLACK);
+        }
+        last_cdc_state = cdc_state;
     }
 
     // 更新底部信息 (底部栏 Y=112)
@@ -304,17 +309,13 @@ void UI_HandleKey(uint8_t key_id)
             ui_full_redraw = 1; // 强制刷新以更新布局
             UI_Refresh();
         } else if (key_id == 4) {
-            // KEY4: 
-            // 如果在 STOP 状态，切换 USB 输出开关
+            // 在暂停状态下，点击 KEY4 切换 USB 传输
             if (OSC_GetState() == OSC_PAUSE) {
-                OSC_TogglePCDataOutput();
-                // 强制刷新顶部状态栏
-                UI_DrawOscilloscope(); // 简单重绘
+                OSC_ToggleCDC();
             } else {
-                // 如果在 RUN 状态，切换底部信息显示 (Vpp / Freq)
+                // 运行状态下，KEY4 切换底部信息显示 (Vpp / Freq)
                 OSC_ToggleInfoMode();
             }
-            // 不需要全屏刷新，底部会自动更新
         } else if (key_id == 5) { // EC11 Button
             // EC11 Button: Pause
             OSC_TogglePause();

@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 
+extern USBD_HandleTypeDef hUsbDeviceFS;
 // 全局变量定义
 uint32_t osc_adc_buffer[OSC_ADC_NUM];
 volatile uint8_t osc_adc_cplt_flag = 0;
@@ -15,10 +16,13 @@ volatile uint8_t osc_adc_half_cplt_flag = 0; // 新增半传输标志
 static OscState_t osc_state = OSC_RUN;
 static OscMode_t osc_mode = OSC_MODE_CH1;
 static uint8_t attenuation_x50 = 0; // 0: x1, 1: x50
-static uint8_t pc_data_output_enabled = 1; // 默认开启数据回传
+static uint8_t cdc_enabled = 0;
 
 // 底部信息显示模式 (0: Vpp, 1: Freq)
 static uint8_t osc_info_mode = 0;
+
+// 绘图条带缓冲区 (1列 x (OSC_WAVE_HEIGHT-2)高，避开上下边框)
+static uint16_t wave_strip_buffer[OSC_WAVE_HEIGHT - 2];
 
 // 频率测量相关变量
 static volatile uint32_t tim3_overflow_count = 0;
@@ -60,9 +64,7 @@ static TimebaseConfig_t timebase_configs[] = {
 #define TIMEBASE_NUM (sizeof(timebase_configs)/sizeof(TimebaseConfig_t))
 static int8_t timebase_idx = 2; // Default 100k
 
-static uint16_t oldWaveCH1[OSC_WAVE_DRAW_WIDTH];
 static uint16_t newWaveCH1[OSC_WAVE_DRAW_WIDTH];
-static uint16_t oldWaveCH2[OSC_WAVE_DRAW_WIDTH];
 static uint16_t newWaveCH2[OSC_WAVE_DRAW_WIDTH];
 
 static float vpp_ch1 = 0.0f;
@@ -70,10 +72,10 @@ static float vpp_ch2 = 0.0f;
 
 // 外部变量 (由main.c维护)
 extern TIM_HandleTypeDef htim1;
-extern USBD_HandleTypeDef hUsbDeviceFS; // 引用 USB 设备句柄
 
 // 触发阈值 (ADC值)
 #define TRIG_THRESHOLD 2048
+#define TRIG_HYSTERESIS 40  // 滞回区间，约 3.3V/4096 * 40 = 0.03V
 
 static void UpdateTimebaseHardware(void) {
     uint16_t arr = timebase_configs[timebase_idx].arr;
@@ -124,110 +126,192 @@ static uint16_t ADC2Y(uint16_t adc_val) {
     return OSC_WAVE_TOP_Y + 1 + y;
 }
 
-// 内部函数声明
-static void OSC_SendChunk(uint8_t* pData, uint32_t len, uint8_t send_header);
+static void OSC_CDC_SendBlock(uint32_t* buffer, uint32_t len) {
+    if (!cdc_enabled) return;
+    if (hUsbDeviceFS.dev_state != USBD_STATE_CONFIGURED) return;
+    uint16_t data_bytes = (uint16_t)(len * 4);
+    uint8_t header[5];
+    uint8_t* data_ptr = (uint8_t*)buffer;
+    uint32_t sent = 0;
+    uint32_t retry;
 
-void OSC_Process(void) {
-    // 1. 处理流式数据发送 (全模式统一 Stream Mode)
-    // 无论采样率多少，只要开启 USB 输出，均采用流式分包发送
-    // 利用 DMA 双缓冲机制保证数据的连续性
-    if (osc_state == OSC_RUN && pc_data_output_enabled) {
-        if (osc_adc_half_cplt_flag) {
-            // 发送前半部分 (带帧头，作为新的一帧开始)
-            OSC_SendChunk((uint8_t*)osc_adc_buffer, OSC_ADC_NUM * 2, 1); // 1 = Send Header
-            osc_adc_half_cplt_flag = 0;
-        }
-        if (osc_adc_cplt_flag) {
-            // 发送后半部分 (不带帧头，接续上一帧)
-            OSC_SendChunk((uint8_t*)&osc_adc_buffer[OSC_ADC_NUM/2], OSC_ADC_NUM * 2, 0); // 0 = No Header
-            // 注意：这里不清除 osc_adc_cplt_flag，因为波形处理逻辑还需要它
-        }
-    } else {
-        // 如果未开启发送，清除半传输标志，防止堆积
-        osc_adc_half_cplt_flag = 0;
+    header[0] = 0xAA;
+    header[1] = 0x55;
+    header[2] = (uint8_t)timebase_idx;
+    header[3] = (uint8_t)(data_bytes & 0xFF);
+    header[4] = (uint8_t)((data_bytes >> 8) & 0xFF);
+
+    retry = 0;
+    while (CDC_Transmit_FS(header, sizeof(header)) == USBD_BUSY) {
+        if (hUsbDeviceFS.dev_state != USBD_STATE_CONFIGURED) return;
+        if (++retry > 1000) return;
     }
 
-    // 2. 处理波形计算与绘制 (Waveform Processing)
-    if (osc_adc_cplt_flag) {
-        if (osc_state == OSC_RUN) {
-            uint8_t step = timebase_configs[timebase_idx].step;
-            
-            // 1. 计算 Vpp
-            uint32_t min1 = 0xFFF, max1 = 0;
-            uint32_t min2 = 0xFFF, max2 = 0;
-            
-            for(int i = 0; i < OSC_ADC_NUM; i++) {
-                uint16_t val1 = osc_adc_buffer[i] & 0xFFFF;
-                uint16_t val2 = (osc_adc_buffer[i] >> 16) & 0xFFFF;
-                
-                if (val1 < min1) min1 = val1;
-                if (val1 > max1) max1 = val1;
-                if (val2 < min2) min2 = val2;
-                if (val2 > max2) max2 = val2;
-            }
-            
-            // 计算 Vpp
-            // 基础公式: (max - min) * 3.3 / 4095 * 2
-            // 如果衰减档位开启，则 * 50
-            float factor = 2.0f;
-            if (attenuation_x50) factor *= 50.0f;
-            
-            vpp_ch1 = (max1 - min1) * 3.3f / 4095.0f * factor;
-            vpp_ch2 = (max2 - min2) * 3.3f / 4095.0f * factor;
+    while (sent < data_bytes) {
+        uint16_t chunk = (uint16_t)((data_bytes - sent) > APP_TX_DATA_SIZE ? APP_TX_DATA_SIZE : (data_bytes - sent));
+        retry = 0;
+        while (CDC_Transmit_FS(data_ptr + sent, chunk) == USBD_BUSY) {
+            if (hUsbDeviceFS.dev_state != USBD_STATE_CONFIGURED) return;
+            if (++retry > 1000) return;
+        }
+        sent += chunk;
+    }
+}
 
-            // 2. 触发查找 (CH1上升沿 -> 对应ADC下降沿)
-            uint16_t t = 0;
-            uint32_t search_limit = OSC_ADC_NUM - (OSC_WAVE_WIDTH * step) - 10;
-            if (search_limit > OSC_ADC_NUM) search_limit = 0;
+void OSC_Process(void) {
+    uint8_t process_active_block = 0; // 0: None, 1: Half(First 1000), 2: Full(Second 1000)
 
-            for (int i = 0; i < search_limit; i++) {
-                uint16_t val1 = osc_adc_buffer[i] & 0xFFFF;
-                uint16_t val2 = osc_adc_buffer[i+1] & 0xFFFF;
-                if (val1 > TRIG_THRESHOLD && val2 <= TRIG_THRESHOLD) {
-                    t = i;
-                    break;
+    // 1. 响应 DMA 标志并分块处理
+    if (osc_state == OSC_RUN) {
+        if (osc_adc_half_cplt_flag) {
+            process_active_block = 1;
+            osc_adc_half_cplt_flag = 0;
+        } 
+        else if (osc_adc_cplt_flag) {
+            process_active_block = 2;
+            osc_adc_cplt_flag = 0;
+        }
+    } else {
+        osc_adc_half_cplt_flag = 0;
+        osc_adc_cplt_flag = 0;
+    }
+
+    // 2. 核心处理逻辑 (优先级 1：合并扫描 - 快照与 Vpp 同时计算)
+    if (process_active_block != 0) {
+        uint8_t step = timebase_configs[timebase_idx].step;
+        uint32_t block_start_idx = (process_active_block == 1) ? 0 : (OSC_ADC_NUM / 2);
+        uint32_t block_len = OSC_ADC_NUM / 2;
+        
+        uint32_t min1 = 0xFFF, max1 = 0, min2 = 0xFFF, max2 = 0;
+        uint16_t trigger_pos = block_start_idx; 
+        uint8_t trigger_found = 0;
+        
+        uint32_t required_points = OSC_WAVE_WIDTH * step;
+        int32_t search_limit = (int32_t)block_len - (int32_t)required_points - 10;
+
+        for(int i = 0; i < block_len; i++) {
+            uint32_t idx = block_start_idx + i;
+            uint32_t raw = osc_adc_buffer[idx];
+            uint16_t val1 = raw & 0xFFFF;
+            uint16_t val2 = (raw >> 16) & 0xFFFF;
+            
+            // --- 任务 1：Vpp 极值查找 ---
+            if (val1 < min1) min1 = val1;
+            if (val1 > max1) max1 = val1;
+            if (val2 < min2) min2 = val2;
+            if (val2 > max2) max2 = val2;
+
+            // --- 任务 2：触发查找 ---
+            if (!trigger_found && i > 0 && i < search_limit) {
+                uint16_t val_prev = osc_adc_buffer[idx-1] & 0xFFFF;
+                if (val_prev > (TRIG_THRESHOLD + TRIG_HYSTERESIS) && val1 <= TRIG_THRESHOLD) {
+                    trigger_pos = idx;
+                    trigger_found = 1;
                 }
             }
-            
-            // 3. 准备波形数据 (仅采集绘制区域宽度的数据)
-            for (int i = 0; i < OSC_WAVE_DRAW_WIDTH; i++) {
-                uint32_t idx = t + i * step;
-                if (idx >= OSC_ADC_NUM) idx = OSC_ADC_NUM - 1;
-                
-                uint32_t raw = osc_adc_buffer[idx];
-                newWaveCH1[i] = ADC2Y(raw & 0xFFFF);
-                newWaveCH2[i] = ADC2Y((raw >> 16) & 0xFFFF);
-            }
-
-            // 发送数据到PC (已移除快照模式，统一由上方 Stream 逻辑处理)
         }
         
-        osc_adc_cplt_flag = 0;
+        // 最终转换 Vpp
+        float factor = attenuation_x50 ? 100.0f : 2.0f;
+        float conv = 3.3f / 4095.0f * factor;
+        vpp_ch1 = (max1 - min1) * conv;
+        vpp_ch2 = (max2 - min2) * conv;
+
+        // 3. 准备波形快照
+        for (int i = 0; i < OSC_WAVE_DRAW_WIDTH; i++) {
+            uint32_t idx = trigger_pos + i * step;
+            if (idx >= OSC_ADC_NUM) idx = OSC_ADC_NUM - 1;
+            
+            uint32_t raw = osc_adc_buffer[idx];
+            newWaveCH1[i] = ADC2Y(raw & 0xFFFF);
+            newWaveCH2[i] = ADC2Y((raw >> 16) & 0xFFFF);
+        }
+
+        // 4. USB 数据回传 (流式)
+        if (cdc_enabled) {
+            OSC_CDC_SendBlock(&osc_adc_buffer[block_start_idx], block_len);
+        }
     }
 }
 
 void OSC_DrawWaveform(void) {
     if (osc_state == OSC_RUN) {
-        // 在 (1, OSC_WAVE_DRAW_WIDTH-1) 范围内绘制波形连接线
-        for (int i = 1; i < OSC_WAVE_DRAW_WIDTH; i++) {
-            // 1. 始终擦除旧波形
-            ST7735_DrawLine(i, oldWaveCH1[i-1], i + 1, oldWaveCH1[i], ST7735_BLACK);
-            ST7735_DrawLine(i, oldWaveCH2[i-1], i + 1, oldWaveCH2[i], ST7735_BLACK);
-            
-            // 2. 绘制新波形 (仅绘制当前启用的通道)
+        // 使用“垂直条带刷新”方案配合 DMA
+        // 每一列建立一个小的缓冲区，计算好像素后一次性发给 DMA
+        // 垂直范围限制在 [TOP+1, BOTTOM-1]，避开上下边框线
+        const uint16_t strip_top = OSC_WAVE_TOP_Y + 1;
+        const uint16_t strip_bottom = OSC_WAVE_BOTTOM_Y - 1;
+        const uint16_t strip_height = strip_bottom - strip_top;
+
+        for (int x = 0; x < OSC_WAVE_DRAW_WIDTH; x++) {
+            // 1. 严格限制 x 坐标，避开左右边框 (边框在 x=0 和 x=159)
+            uint16_t screen_x = x + 1;
+            if (screen_x >= ST7735_WIDTH - 1) break;
+
+            // 2. 等待上一次 DMA 传输完成
+            while (ST7735_IsBusy());
+
+            // 3. 准备这一列的条带数据 (预填背景网格)
+            for (int h = 0; h < strip_height; h++) {
+                uint16_t screen_y = h + strip_top;
+                uint16_t color = 0x0000; // 默认黑色
+
+                // --- 背景网格逻辑 (同步 ui.c) ---
+                // 1. 中心十字轴 (实线 0x3186 -> 大端 86 31)
+                if (screen_x == ST7735_WIDTH / 2 || screen_y == OSC_WAVE_TOP_Y + OSC_WAVE_HEIGHT / 2) {
+                    color = 0x8631;
+                }
+                // 2. 垂直虚线网格 (每 20px, 4px周期)
+                else if (screen_x % 20 == 0 && screen_y % 4 == 0) {
+                    color = 0x0421; // 0x2104 -> 大端 04 21
+                }
+                // 3. 水平虚线网格 (每 18px, 4px周期)
+                else if ((screen_y - OSC_WAVE_TOP_Y) % 18 == 0 && screen_x % 4 == 0) {
+                    color = 0x0421;
+                }
+
+                wave_strip_buffer[h] = color;
+            }
+
+            // 3. 在条带中描绘波形点 (将 Y 坐标映射到条带内的相对位置)
+            // 描绘 CH1 (绿色 0x07E0 -> 大端 E0 07)
             if (osc_mode == OSC_MODE_CH1 || osc_mode == OSC_MODE_DUAL) {
-                ST7735_DrawLine(i, newWaveCH1[i-1], i + 1, newWaveCH1[i], ST7735_GREEN);
+                int y1 = newWaveCH1[x] - strip_top;
+                if (y1 >= 0 && y1 < strip_height) {
+                    wave_strip_buffer[y1] = 0xE007; // 绿色 (大端)
+                }
+                // 连线处理
+                if (x > 0) {
+                    int y_prev = newWaveCH1[x-1] - strip_top;
+                    int y_min = (y1 < y_prev) ? y1 : y_prev;
+                    int y_max = (y1 > y_prev) ? y1 : y_prev;
+                    for (int y = y_min; y <= y_max; y++) {
+                        if (y >= 0 && y < strip_height) wave_strip_buffer[y] = 0xE007;
+                    }
+                }
             }
+
+            // 描绘 CH2 (黄色 0xFFE0 -> 大端 E0 FF)
             if (osc_mode == OSC_MODE_CH2 || osc_mode == OSC_MODE_DUAL) {
-                ST7735_DrawLine(i, newWaveCH2[i-1], i + 1, newWaveCH2[i], ST7735_YELLOW);
+                int y2 = newWaveCH2[x] - strip_top;
+                if (y2 >= 0 && y2 < strip_height) {
+                    wave_strip_buffer[y2] = 0xE0FF; // 黄色 (大端)
+                }
+                // 连线处理
+                if (x > 0) {
+                    int y_prev = newWaveCH2[x-1] - strip_top;
+                    int y_min = (y2 < y_prev) ? y2 : y_prev;
+                    int y_max = (y2 > y_prev) ? y2 : y_prev;
+                    for (int y = y_min; y <= y_max; y++) {
+                        if (y >= 0 && y < strip_height) wave_strip_buffer[y] = 0xE0FF;
+                    }
+                }
             }
-            
-            // 更新旧数据
-            oldWaveCH1[i-1] = newWaveCH1[i-1];
-            oldWaveCH2[i-1] = newWaveCH2[i-1];
+
+            // 4. 发送条带到屏幕对应列 (仅刷新内部区域)
+            ST7735_SetWindow(screen_x, strip_top, screen_x, strip_bottom - 1);
+            ST7735_WriteDataBufferDMA(wave_strip_buffer, strip_height);
         }
-        oldWaveCH1[OSC_WAVE_DRAW_WIDTH-1] = newWaveCH1[OSC_WAVE_DRAW_WIDTH-1];
-        oldWaveCH2[OSC_WAVE_DRAW_WIDTH-1] = newWaveCH2[OSC_WAVE_DRAW_WIDTH-1];
     }
 }
 
@@ -254,6 +338,14 @@ void OSC_CycleChannelMode(void) {
 
 void OSC_ToggleInfoMode(void) {
     osc_info_mode = !osc_info_mode;
+}
+
+void OSC_ToggleCDC(void) {
+    cdc_enabled = !cdc_enabled;
+}
+
+uint8_t OSC_GetCDCState(void) {
+    return cdc_enabled;
 }
 
 uint8_t OSC_GetStep(void) {
@@ -290,63 +382,6 @@ uint32_t OSC_GetFrequency(uint8_t channel) {
     return freq_ch2;
 }
 
-void OSC_TogglePCDataOutput(void) {
-    pc_data_output_enabled = !pc_data_output_enabled;
-}
-
-uint8_t OSC_IsPCDataOutputEnabled(void) {
-    return pc_data_output_enabled;
-}
-
-// 内部通用发送函数
-static void OSC_SendChunk(uint8_t* pData, uint32_t len, uint8_t send_header) {
-    if (hUsbDeviceFS.dev_state != USBD_STATE_CONFIGURED) return;
-
-    // Header: AA 55 [Timebase]
-    // 为了兼容现有上位机 (Header + 8000 Bytes)，我们在流模式下：
-    // - HalfComplete 时发送 Header + 前半数据
-    // - FullComplete 时仅发送 后半数据
-    
-    if (send_header) {
-        uint8_t header[3];
-        header[0] = 0xAA;
-        header[1] = 0x55;
-        header[2] = (uint8_t)timebase_idx;
-        
-        // 发送 Header
-        uint32_t header_timeout = 2000; 
-        while(CDC_Transmit_FS(header, 3) == USBD_BUSY && header_timeout > 0) {
-            header_timeout--;
-        }
-        if (header_timeout == 0) return;
-    }
-    
-    // 发送 Data
-    uint32_t remaining = len;
-    uint32_t chunk_size = 1000;
-    
-    while (remaining > 0) {
-        if (chunk_size > remaining) chunk_size = remaining;
-        
-        uint32_t timeout = 2000;
-        uint8_t status;
-        do {
-            status = CDC_Transmit_FS(pData, chunk_size);
-            timeout--;
-        } while (status == USBD_BUSY && timeout > 0);
-        
-        if (status != USBD_OK) break;
-        
-        pData += chunk_size;
-        remaining -= chunk_size;
-    }
-}
-
-// 原始发送函数：已弃用，保留空壳以兼容头文件声明
-// 所有发送均由 OSC_Process 中的流式逻辑接管
-void OSC_SendDataToPC(void) {
-    // Deprecated
-}
 
 // 中断回调函数
 void OSC_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {

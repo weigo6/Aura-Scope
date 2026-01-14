@@ -172,6 +172,8 @@ int main(void)
     // 我们总是调用 UI_Refresh 来驱动动画?
     UI_Refresh();
 
+    // 如果没有外部交互且波形刚处理完，可以适当减小延迟以提升帧率
+    // 但为了保证按键响应，这里保留一个极小的延迟
     if (key_pressed) {
         UI_HandleKey(key_pressed);
         key_pressed = 0;
@@ -184,7 +186,7 @@ int main(void)
         UI_Refresh(); // Encoder changes params, need refresh
     }
     
-    HAL_Delay(50); // Frame rate limit ~20fps
+    HAL_Delay(5); // 提升帧率限制到 ~200fps (实际受限于 SPI/USB 阻塞)
   }
   /* USER CODE END 3 */
 }

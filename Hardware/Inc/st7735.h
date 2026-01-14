@@ -24,6 +24,7 @@ extern "C" {
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "spi.h"
+#include <stdbool.h>
 
 /* USER CODE BEGIN Includes */
 
@@ -182,6 +183,8 @@ void ST7735_DrawString(uint16_t x, uint16_t y, const char *str, uint16_t color, 
   * @retval None
   */
 void ST7735_WriteDataBuffer(uint16_t *data, uint32_t len);
+void ST7735_WriteDataBufferDMA(uint16_t *data, uint32_t len);
+bool ST7735_IsBusy(void);
 
 /* USER CODE BEGIN EFP */
 
