@@ -93,7 +93,14 @@ void MX_TIM1_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN TIM1_Init 2 */
-
+  // Fix: Force TIM1 CH1 to PWM1 mode (Pulse=1) to ensure correct ADC trigger rate
+  // This overrides CubeMX generated 'Toggle' mode which halves the sample rate.
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 1;
+  if (HAL_TIM_OC_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
   /* USER CODE END TIM1_Init 2 */
 
 }
