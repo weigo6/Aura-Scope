@@ -10,6 +10,7 @@
 // 全局变量定义
 uint32_t osc_adc_buffer[OSC_ADC_NUM];
 volatile uint8_t osc_adc_cplt_flag = 0;
+volatile uint8_t osc_adc_half_cplt_flag = 0; // 新增半传输标志
 
 static OscState_t osc_state = OSC_RUN;
 static OscMode_t osc_mode = OSC_MODE_CH1;
@@ -105,6 +106,13 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
     }
 }
 
+// ADC半传输回调
+void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc) {
+    if (hadc->Instance == ADC1) {
+        osc_adc_half_cplt_flag = 1;
+    }
+}
+
 // ADC值转Y坐标 (根据公式 Vin = 50 * [5 - 2 * V_adc])
 // ADC=0 -> Vin=250V (High) -> Top
 // ADC=4095 -> Vin=-80V (Low) -> Bottom
@@ -116,7 +124,30 @@ static uint16_t ADC2Y(uint16_t adc_val) {
     return OSC_WAVE_TOP_Y + 1 + y;
 }
 
+// 内部函数声明
+static void OSC_SendChunk(uint8_t* pData, uint32_t len, uint8_t send_header);
+
 void OSC_Process(void) {
+    // 1. 处理流式数据发送 (全模式统一 Stream Mode)
+    // 无论采样率多少，只要开启 USB 输出，均采用流式分包发送
+    // 利用 DMA 双缓冲机制保证数据的连续性
+    if (osc_state == OSC_RUN && pc_data_output_enabled) {
+        if (osc_adc_half_cplt_flag) {
+            // 发送前半部分 (带帧头，作为新的一帧开始)
+            OSC_SendChunk((uint8_t*)osc_adc_buffer, OSC_ADC_NUM * 2, 1); // 1 = Send Header
+            osc_adc_half_cplt_flag = 0;
+        }
+        if (osc_adc_cplt_flag) {
+            // 发送后半部分 (不带帧头，接续上一帧)
+            OSC_SendChunk((uint8_t*)&osc_adc_buffer[OSC_ADC_NUM/2], OSC_ADC_NUM * 2, 0); // 0 = No Header
+            // 注意：这里不清除 osc_adc_cplt_flag，因为波形处理逻辑还需要它
+        }
+    } else {
+        // 如果未开启发送，清除半传输标志，防止堆积
+        osc_adc_half_cplt_flag = 0;
+    }
+
+    // 2. 处理波形计算与绘制 (Waveform Processing)
     if (osc_adc_cplt_flag) {
         if (osc_state == OSC_RUN) {
             uint8_t step = timebase_configs[timebase_idx].step;
@@ -168,10 +199,7 @@ void OSC_Process(void) {
                 newWaveCH2[i] = ADC2Y((raw >> 16) & 0xFFFF);
             }
 
-            // 发送数据到PC (如果在运行且开启)
-            if (pc_data_output_enabled) {
-                OSC_SendDataToPC();
-            }
+            // 发送数据到PC (已移除快照模式，统一由上方 Stream 逻辑处理)
         }
         
         osc_adc_cplt_flag = 0;
@@ -270,60 +298,54 @@ uint8_t OSC_IsPCDataOutputEnabled(void) {
     return pc_data_output_enabled;
 }
 
-void OSC_SendDataToPC(void) {
-    // 检查 USB 是否已配置且就绪
-    if (hUsbDeviceFS.dev_state != USBD_STATE_CONFIGURED) {
-        return;
-    }
-    
-    // 为了防止高采样率下(>100k)数据在发送过程中被DMA覆盖，
-    // 在发送前暂停采样定时器，发送完毕后恢复。
-    // 这实现了“快照发送”模式。
-    HAL_TIM_Base_Stop(&htim1);
+// 内部通用发送函数
+static void OSC_SendChunk(uint8_t* pData, uint32_t len, uint8_t send_header) {
+    if (hUsbDeviceFS.dev_state != USBD_STATE_CONFIGURED) return;
 
-    // 协议升级：
-    // Frame Header: 0xAA 0x55 (2 bytes)
-    // Timebase Idx: 1 byte
-    // Data:         8000 bytes
+    // Header: AA 55 [Timebase]
+    // 为了兼容现有上位机 (Header + 8000 Bytes)，我们在流模式下：
+    // - HalfComplete 时发送 Header + 前半数据
+    // - FullComplete 时仅发送 后半数据
     
-    uint8_t header[3];
-    header[0] = 0xAA;
-    header[1] = 0x55;
-    header[2] = (uint8_t)timebase_idx;
-    
-    // 1. Send Header + Index with Timeout
-    uint32_t header_timeout = 5000;
-    while(CDC_Transmit_FS(header, 3) == USBD_BUSY && header_timeout > 0) {
-        header_timeout--;
+    if (send_header) {
+        uint8_t header[3];
+        header[0] = 0xAA;
+        header[1] = 0x55;
+        header[2] = (uint8_t)timebase_idx;
+        
+        // 发送 Header
+        uint32_t header_timeout = 2000; 
+        while(CDC_Transmit_FS(header, 3) == USBD_BUSY && header_timeout > 0) {
+            header_timeout--;
+        }
+        if (header_timeout == 0) return;
     }
-    if (header_timeout == 0) {
-        HAL_TIM_Base_Start(&htim1); // 超时恢复采样
-        return; 
-    }
     
-    // 2. Send Data in Chunks
-    uint8_t* pData = (uint8_t*)osc_adc_buffer;
-    uint32_t remaining = OSC_ADC_NUM * 4;
-    uint32_t chunk_size = 1000; // Safe size within 1024 buffer
+    // 发送 Data
+    uint32_t remaining = len;
+    uint32_t chunk_size = 1000;
     
     while (remaining > 0) {
         if (chunk_size > remaining) chunk_size = remaining;
         
-        uint32_t timeout = 5000; // Simple timeout loop for each chunk
+        uint32_t timeout = 2000;
         uint8_t status;
         do {
             status = CDC_Transmit_FS(pData, chunk_size);
             timeout--;
         } while (status == USBD_BUSY && timeout > 0);
         
-        if (status != USBD_OK) break; // Error or Timeout
+        if (status != USBD_OK) break;
         
         pData += chunk_size;
         remaining -= chunk_size;
     }
+}
 
-    // 恢复采样
-    HAL_TIM_Base_Start(&htim1);
+// 原始发送函数：已弃用，保留空壳以兼容头文件声明
+// 所有发送均由 OSC_Process 中的流式逻辑接管
+void OSC_SendDataToPC(void) {
+    // Deprecated
 }
 
 // 中断回调函数

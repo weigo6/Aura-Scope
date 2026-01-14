@@ -173,6 +173,13 @@ void UI_DrawOscilloscope(void)
         ST7735_DrawString(0, 2, "RUN ", ST7735_GREEN, ST7735_BLACK);
     }
     
+    // 1.5 USB 状态 (左中)
+    if (OSC_IsPCDataOutputEnabled()) {
+        ST7735_DrawString(35, 2, "USB", ST7735_CYAN, ST7735_BLACK);
+    } else {
+        ST7735_DrawString(35, 2, "USB", ST7735_GRAY, ST7735_BLACK);
+    }
+
     // 2. 时基 (中)
     snprintf(buf, sizeof(buf), "%s  ", OSC_GetTimebaseName()); 
     ST7735_DrawString(64, 2, buf, ST7735_YELLOW, ST7735_BLACK);
@@ -297,8 +304,16 @@ void UI_HandleKey(uint8_t key_id)
             ui_full_redraw = 1; // 强制刷新以更新布局
             UI_Refresh();
         } else if (key_id == 4) {
-            // KEY4: 切换底部信息显示 (Vpp / Freq)
-            OSC_ToggleInfoMode();
+            // KEY4: 
+            // 如果在 STOP 状态，切换 USB 输出开关
+            if (OSC_GetState() == OSC_PAUSE) {
+                OSC_TogglePCDataOutput();
+                // 强制刷新顶部状态栏
+                UI_DrawOscilloscope(); // 简单重绘
+            } else {
+                // 如果在 RUN 状态，切换底部信息显示 (Vpp / Freq)
+                OSC_ToggleInfoMode();
+            }
             // 不需要全屏刷新，底部会自动更新
         } else if (key_id == 5) { // EC11 Button
             // EC11 Button: Pause
