@@ -8,6 +8,7 @@
 #include "ui.h"
 #include "signal_gen.h"
 #include "osc_app.h"
+#include "font.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -29,6 +30,7 @@ static char last_timebase_str[8] = {0};
 typedef enum {
     PARAM_FREQUENCY = 0,
     PARAM_DUTY_CYCLE,
+    PARAM_OUTPUT,
     PARAM_COUNT
 } SigGen_Param_t;
 
@@ -37,6 +39,54 @@ static SigGen_Param_t sig_gen_selected_param = PARAM_FREQUENCY;
 // For Oscilloscope anti-flicker
 #define ADC_BUFFER_SIZE 1000
 
+#define UI_FONT_WIDTH 8
+#define UI_FONT_HEIGHT 16
+
+static void UI_DrawBigChar(uint16_t x, uint16_t y, char ch, uint16_t color, uint16_t bgcolor)
+{
+    const uint8_t *bitmap = font8x16[(uint8_t)ch];
+    uint16_t scale = 2;
+
+    for (uint8_t row = 0; row < UI_FONT_HEIGHT; row++) {
+        uint8_t line = bitmap[row];
+        for (uint8_t col = 0; col < UI_FONT_WIDTH; col++) {
+            uint16_t pixel_color = (line & (0x80 >> col)) ? color : bgcolor;
+            uint16_t base_x = x + col * scale;
+            uint16_t base_y = y + row * scale;
+
+            if (base_x + scale - 1 >= ST7735_WIDTH || base_y + scale - 1 >= ST7735_HEIGHT) {
+                continue;
+            }
+
+            for (uint8_t dy = 0; dy < scale; dy++) {
+                for (uint8_t dx = 0; dx < scale; dx++) {
+                    ST7735_DrawPixel(base_x + dx, base_y + dy, pixel_color);
+                }
+            }
+        }
+    }
+}
+
+static void UI_DrawBigString(uint16_t x, uint16_t y, const char *str, uint16_t color, uint16_t bgcolor)
+{
+    uint16_t scale = 2;
+    uint16_t char_width = UI_FONT_WIDTH * scale;
+    uint16_t char_height = UI_FONT_HEIGHT * scale;
+
+    while (*str) {
+        if (x + char_width > ST7735_WIDTH) {
+            x = 0;
+            y += char_height;
+        }
+        if (y + char_height > ST7735_HEIGHT) {
+            break;
+        }
+
+        UI_DrawBigChar(x, y, *str, color, bgcolor);
+        x += char_width;
+        str++;
+    }
+}
 
 /**
   * @brief UI 初始化
@@ -100,26 +150,31 @@ void UI_Refresh(void)
   */
 void UI_DrawWelcome(void)
 {
-    if (!ui_full_redraw) return; // Static screen, no update needed
+    if (!ui_full_redraw) return;
 
-    // 绘制深色极客风格背景
-    for (uint16_t i = 0; i < ST7735_WIDTH; i += 20) {
-        ST7735_DrawLine(i, 0, i, ST7735_HEIGHT - 1, 0x0841); // 深灰色垂直线
-    }
-    for (uint16_t i = 0; i < ST7735_HEIGHT; i += 20) {
-        ST7735_DrawLine(0, i, ST7735_WIDTH - 1, i, 0x0841); // 深灰色水平线
-    }
+    const char *title = "Aura Scope";
+    uint16_t title_len = strlen(title);
+    uint16_t title_char_width = UI_FONT_WIDTH * 2;
+    uint16_t title_char_height = UI_FONT_HEIGHT * 2;
+    uint16_t title_width = title_len * title_char_width;
+    uint16_t title_x = (ST7735_WIDTH - title_width) / 2;
+    uint16_t title_y = 38;
+    UI_DrawBigString(title_x, title_y, title, ST7735_WHITE, ST7735_BLACK);
 
-    // 绘制中心发光效果
-    ST7735_DrawRect(38, 38, 122, 92, ST7735_BLUE);
-    ST7735_DrawRect(40, 40, 120, 90, ST7735_CYAN);
-    
-    // 显示 "AuraScope"
-    ST7735_DrawString(44, 50, "AuraScope", ST7735_WHITE, ST7735_BLACK);
-    ST7735_DrawString(55, 70, "V1.0.0", ST7735_GREEN, ST7735_BLACK);
+    uint16_t line_y = title_y + title_char_height;
+    ST7735_DrawLine(20, line_y, ST7735_WIDTH - 20, line_y, ST7735_CYAN);
 
-    // 提示信息 (居中)
-    ST7735_DrawString(8, 105, "Press KEY to Start", ST7735_YELLOW, ST7735_BLACK);
+    const char *version = "V1.0.0";
+    uint16_t ver_len = strlen(version);
+    uint16_t ver_x = (ST7735_WIDTH - ver_len * UI_FONT_WIDTH) / 2;
+    uint16_t ver_y = line_y + 18;
+    ST7735_DrawString(ver_x, ver_y, version, ST7735_GREEN, ST7735_BLACK);
+
+    const char *author = "Author : Luwei";
+    uint16_t author_len = strlen(author);
+    uint16_t author_x = (ST7735_WIDTH - author_len * UI_FONT_WIDTH) / 2;
+    uint16_t author_y = ST7735_HEIGHT - UI_FONT_HEIGHT - 4;
+    ST7735_DrawString(author_x, author_y, author, ST7735_GRAY, ST7735_BLACK);
 }
 
 /**
@@ -275,29 +330,30 @@ void UI_DrawSignalGen(void)
 {
     char buf[32];
     
-    // 静态元素 (仅重绘时绘制)
     if (ui_full_redraw) {
-        // 标题
         ST7735_FillRect(0, 0, ST7735_WIDTH - 1, 18, ST7735_MAGENTA);
         ST7735_DrawString(16, 2, "SIGNAL GENERATOR", ST7735_WHITE, ST7735_MAGENTA);
-        
-        // 方波提示
-        ST7735_DrawString(10, 30, "Wave: Square", ST7735_CYAN, ST7735_BLACK);
+        ST7735_DrawString(10, 22, "Wave: Square", ST7735_CYAN, ST7735_BLACK);
     }
     
-    // 动态元素：选中框与数值
-    
-    // 1. 频率
     uint16_t color = (sig_gen_selected_param == PARAM_FREQUENCY) ? ST7735_YELLOW : ST7735_WHITE;
-    ST7735_DrawRect(5, 55, 154, 80, color);
+    ST7735_DrawRect(5, 36, 154, 56, color);
     snprintf(buf, sizeof(buf), "Freq: %lu Hz  ", (unsigned long)g_SignalGen.frequency);
-    ST7735_DrawString(10, 60, buf, ST7735_CYAN, ST7735_BLACK);
+    ST7735_DrawString(10, 40, buf, ST7735_CYAN, ST7735_BLACK);
     
-    // 2. 占空比
     color = (sig_gen_selected_param == PARAM_DUTY_CYCLE) ? ST7735_YELLOW : ST7735_WHITE;
-    ST7735_DrawRect(5, 85, 154, 110, color);
+    ST7735_DrawRect(5, 60, 154, 80, color);
     snprintf(buf, sizeof(buf), "Duty: %u %%  ", g_SignalGen.duty_cycle);
-    ST7735_DrawString(10, 90, buf, ST7735_CYAN, ST7735_BLACK);
+    ST7735_DrawString(10, 64, buf, ST7735_CYAN, ST7735_BLACK);
+
+    color = (sig_gen_selected_param == PARAM_OUTPUT) ? ST7735_YELLOW : ST7735_WHITE;
+    ST7735_DrawRect(5, 84, 154, 104, color);
+    const char *state_str = g_SignalGen.running ? "ON " : "OFF";
+    snprintf(buf, sizeof(buf), "Output: %s  ", state_str);
+    uint16_t text_color = g_SignalGen.running ? ST7735_GREEN : ST7735_RED;
+    ST7735_DrawString(10, 88, buf, text_color, ST7735_BLACK);
+
+    ST7735_DrawString(0, 112, "K1:UI K2:SEL K3/4:+-", ST7735_GRAY, ST7735_BLACK);
 }
 
 /**
@@ -335,25 +391,29 @@ void UI_HandleKey(uint8_t key_id)
     }
     else if (current_ui_state == UI_STATE_SIGNAL_GEN) {
         switch (key_id) {
-            case 2: // KEY2: 切换选中参数
+            case 2:
                 sig_gen_selected_param = (SigGen_Param_t)((sig_gen_selected_param + 1) % PARAM_COUNT);
                 break;
                 
-            case 3: // KEY3: 减少值
+            case 3:
                 if (sig_gen_selected_param == PARAM_FREQUENCY) {
                     uint32_t step = (g_SignalGen.frequency >= 1000) ? 100 : ((g_SignalGen.frequency >= 100) ? 10 : 1);
                     if (g_SignalGen.frequency > step) SignalGen_SetFrequency(g_SignalGen.frequency - step);
                 } else if (sig_gen_selected_param == PARAM_DUTY_CYCLE) {
                     if (g_SignalGen.duty_cycle > 1) SignalGen_SetDutyCycle(g_SignalGen.duty_cycle - 1);
+                } else if (sig_gen_selected_param == PARAM_OUTPUT) {
+                    SignalGen_SetRunning(0);
                 }
                 break;
                 
-            case 4: // KEY4: 增加值
+            case 4:
                 if (sig_gen_selected_param == PARAM_FREQUENCY) {
                     uint32_t step = (g_SignalGen.frequency >= 1000) ? 100 : ((g_SignalGen.frequency >= 100) ? 10 : 1);
                     SignalGen_SetFrequency(g_SignalGen.frequency + step);
                 } else if (sig_gen_selected_param == PARAM_DUTY_CYCLE) {
                     if (g_SignalGen.duty_cycle < 99) SignalGen_SetDutyCycle(g_SignalGen.duty_cycle + 1);
+                } else if (sig_gen_selected_param == PARAM_OUTPUT) {
+                    SignalGen_SetRunning(1);
                 }
                 break;
         }

@@ -46,22 +46,20 @@ void SignalGen_SetDutyCycle(uint8_t duty)
 
 static void SignalGen_ConfigHardware(void)
 {
+    if (!g_SignalGen.running) {
+        return;
+    }
+
     HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_3);
     HAL_TIM_Base_Stop_IT(&htim2);
 
-    // 方波模式：使用硬件PWM
-    // 目标：设置 ARR 和 PSC 以产生目标频率
-    // F_out = 72MHz / ((PSC+1) * (ARR+1))
-    
-    uint32_t psc = 71; // 1MHz base clock (72MHz / 72)
-    // 防止除零
+    uint32_t psc = 71;
     if (g_SignalGen.frequency == 0) g_SignalGen.frequency = 1;
     
     uint32_t arr = (1000000 / g_SignalGen.frequency) - 1;
     
-    // 如果频率太高，减少 PSC 以提高分辨率
     if (g_SignalGen.frequency > 10000) {
-        psc = 0; // 72MHz base clock
+        psc = 0;
         arr = (72000000 / g_SignalGen.frequency) - 1;
     }
 
@@ -73,16 +71,32 @@ static void SignalGen_ConfigHardware(void)
     
     HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);
     
-    // 必须开启中断，用于CH2频率测量的溢出计数
     __HAL_TIM_CLEAR_FLAG(&htim2, TIM_FLAG_UPDATE);
     __HAL_TIM_ENABLE_IT(&htim2, TIM_IT_UPDATE);
-    HAL_TIM_Base_Start_IT(&htim2); // Ensure Base IT is started
+    HAL_TIM_Base_Start_IT(&htim2);
+}
 
-    // 不需要高优先级中断，因为不再使用 SPWM
-    // HAL_NVIC_EnableIRQ(TIM2_IRQn); // 保持开启用于溢出计数
+void SignalGen_SetRunning(uint8_t running)
+{
+    if (running) {
+        if (!g_SignalGen.running) {
+            g_SignalGen.running = 1;
+            SignalGen_ConfigHardware();
+        }
+    } else {
+        if (g_SignalGen.running) {
+            g_SignalGen.running = 0;
+            HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_3);
+            HAL_TIM_Base_Stop_IT(&htim2);
+        }
+    }
+}
+
+void SignalGen_ToggleRunning(void)
+{
+    SignalGen_SetRunning(!g_SignalGen.running);
 }
 
 void SignalGen_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
-    // 不再需要 SPWM 逻辑
 }

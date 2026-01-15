@@ -24,6 +24,8 @@ void SignalGen_Init(void);
 void SignalGen_SetType(WaveType_t type);
 void SignalGen_SetFrequency(uint32_t freq);
 void SignalGen_SetDutyCycle(uint8_t duty);
+void SignalGen_SetRunning(uint8_t running);
+void SignalGen_ToggleRunning(void);
 void SignalGen_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim);
 
 #endif /* __SIGNAL_GEN_H */
