@@ -9,12 +9,12 @@
 #include "signal_gen.h"
 #include "osc_app.h"
 #include <stdio.h>
+#include <string.h>
 
 static UI_State_t current_ui_state = UI_STATE_WELCOME;
 static UI_State_t last_ui_state = UI_STATE_COUNT;
 static uint8_t ui_full_redraw = 0;
 
-// 缓存上一次显示的数值，用于减少频闪
 static int last_v1_int = -1, last_v1_frac = -1;
 static int last_v2_int = -1, last_v2_frac = -1;
 static uint32_t last_freq1 = 0xFFFFFFFF;
@@ -22,6 +22,9 @@ static uint32_t last_freq2 = 0xFFFFFFFF;
 static uint8_t last_info_mode = 0xFF;
 static uint8_t last_cdc_state = 0xFF;
 static OscMode_t last_osc_mode_bottom = OSC_MODE_COUNT;
+static OscState_t last_osc_state_top = OSC_PAUSE;
+static uint8_t last_atten_top = 0xFF;
+static char last_timebase_str[8] = {0};
 
 typedef enum {
     PARAM_FREQUENCY = 0,
@@ -163,35 +166,44 @@ void UI_DrawOscilloscope(void)
     // 防止 SetWindow 命令与文字绘制冲突
     while (ST7735_IsBusy());
 
-    // 更新状态显示 (顶部状态栏 Y=2)
     char buf[32];
     OscMode_t osc_mode = OSC_GetChannelMode();
     
-    // 1. 运行状态 (左)
-    if (OSC_GetState() == OSC_PAUSE) {
-        ST7735_DrawString(0, 2, "STOP", ST7735_RED, ST7735_BLACK);
-    } else {
-        ST7735_DrawString(0, 2, "RUN ", ST7735_GREEN, ST7735_BLACK);
+    OscState_t osc_state = OSC_GetState();
+    uint8_t atten = OSC_GetAttenuation();
+    const char* tb_name = OSC_GetTimebaseName();
+
+    if (ui_full_redraw || osc_state != last_osc_state_top) {
+        if (osc_state == OSC_PAUSE) {
+            ST7735_DrawString(0, 2, "STOP", ST7735_RED, ST7735_BLACK);
+        } else {
+            ST7735_DrawString(0, 2, "RUN ", ST7735_GREEN, ST7735_BLACK);
+        }
+        last_osc_state_top = osc_state;
     }
     
-    // 2. 时基 (中)
-    snprintf(buf, sizeof(buf), "%s  ", OSC_GetTimebaseName()); 
-    ST7735_DrawString(64, 2, buf, ST7735_YELLOW, ST7735_BLACK);
-
-    // 3. 衰减档位 (右)
-    if (OSC_GetAttenuation() == 50) {
-        ST7735_DrawString(100, 2, "x50", ST7735_RED, ST7735_BLACK);
-    } else {
-        ST7735_DrawString(100, 2, "x1 ", ST7735_GREEN, ST7735_BLACK);
+    snprintf(buf, sizeof(buf), "%s  ", tb_name);
+    if (ui_full_redraw || strncmp(buf, last_timebase_str, sizeof(last_timebase_str)) != 0) {
+        ST7735_DrawString(40, 2, buf, ST7735_YELLOW, ST7735_BLACK);
+        strncpy(last_timebase_str, buf, sizeof(last_timebase_str));
+        last_timebase_str[sizeof(last_timebase_str) - 1] = '\0';
     }
 
-    // 4. USB CDC 状态 (最右侧)
+    if (ui_full_redraw || atten != last_atten_top) {
+        if (atten == 50) {
+            ST7735_DrawString(88, 2, "x50", ST7735_RED, ST7735_BLACK);
+        } else {
+            ST7735_DrawString(88, 2, "x1 ", ST7735_GREEN, ST7735_BLACK);
+        }
+        last_atten_top = atten;
+    }
+
     uint8_t cdc_state = OSC_GetCDCState();
     if (cdc_state != last_cdc_state || ui_full_redraw) {
         if (cdc_state) {
             ST7735_DrawString(130, 2, "USB", ST7735_CYAN, ST7735_BLACK);
         } else {
-            ST7735_DrawString(130, 2, "---", ST7735_GRAY, ST7735_BLACK);
+            ST7735_DrawString(130, 2, "USB", ST7735_GRAY, ST7735_BLACK);
         }
         last_cdc_state = cdc_state;
     }
