@@ -53,3 +53,6 @@
 - 代码风格：使用 HAL 库风格。在修改代码时，必须将逻辑写在 /* USER CODE BEGIN */ 和 /* USER CODE END */ 标签之间，以防 CubeMX 重新生成代码时覆盖。
 - 查找逻辑：当找不到函数定义时，优先搜索 Drivers/STM32xxxx_HAL_Driver/ 目录。
 - 任务流：修改完代码后，请提示我检查引脚配置是否需要同步在 .ioc 文件中（虽然你无法修改 .ioc 图形界面）。
+
+## 5.上位机（PC）程序
+- 项目具有一个基于 Pyside6 的上位机程序，位于 AuraScope-Viewer/aurascope.py ，使用 UV 作为 Python 包管理器，请使用 uv run 运行Python程序。

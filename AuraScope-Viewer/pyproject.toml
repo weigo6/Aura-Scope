@@ -1,0 +1,13 @@
+[project]
+name = "aurascope-viewer"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.4.1",
+    "pyqtgraph>=0.14.0",
+    "pyserial>=3.5",
+    "pyside6>=6.10.1",
+    "scipy>=1.17.0",
+]
