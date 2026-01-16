@@ -11,9 +11,12 @@ void SignalGen_Init(void)
     g_SignalGen.type = WAVE_SQUARE;
     g_SignalGen.frequency = 1000;
     g_SignalGen.duty_cycle = 50;
-    g_SignalGen.running = 1;
+    g_SignalGen.running = 0;
 
     SignalGen_ConfigHardware();
+    
+    // Sync LED2 (Signal Gen) state
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_15, g_SignalGen.running ? GPIO_PIN_RESET : GPIO_PIN_SET);
 }
 
 void SignalGen_SetType(WaveType_t type)
@@ -90,6 +93,8 @@ void SignalGen_SetRunning(uint8_t running)
             HAL_TIM_Base_Stop_IT(&htim2);
         }
     }
+    // Update LED2 (Signal Gen)
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_15, g_SignalGen.running ? GPIO_PIN_RESET : GPIO_PIN_SET);
 }
 
 void SignalGen_ToggleRunning(void)

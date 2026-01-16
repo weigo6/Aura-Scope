@@ -87,6 +87,9 @@ void OSC_Init(void) {
     SignalGen_Init();
     // Apply default timebase
     UpdateTimebaseHardware();
+
+    // Sync LED1 (USB) state with cdc_enabled
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_14, cdc_enabled ? GPIO_PIN_RESET : GPIO_PIN_SET);
 }
 
 void OSC_Start(void) {
@@ -342,6 +345,8 @@ void OSC_ToggleInfoMode(void) {
 
 void OSC_ToggleCDC(void) {
     cdc_enabled = !cdc_enabled;
+    // Update LED1 (USB)
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_14, cdc_enabled ? GPIO_PIN_RESET : GPIO_PIN_SET);
 }
 
 uint8_t OSC_GetCDCState(void) {
