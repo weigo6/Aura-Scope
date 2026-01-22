@@ -37,6 +37,7 @@ mx.scratch
 *.dep
 *.d
 *.su
+*.pyc
 
 # OS
 .DS_Store

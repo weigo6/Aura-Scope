@@ -7,6 +7,7 @@ import serial
 import serial.tools.list_ports
 import struct
 from collections import deque
+from signal_simulator import SignalSimulator
 
 # 核心 UI 库导入
 from PySide6.QtCore import Qt, QThread, Signal, Slot, QPointF
@@ -15,13 +16,42 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QComboBox, QPushButton, QLabel, 
                              QCheckBox, QRadioButton, QGroupBox, QSlider, QButtonGroup,
                              QFileDialog, QMessageBox, QScrollArea, QFrame,
-                             QSplitter)
+                             QSplitter, QDoubleSpinBox)
 import pyqtgraph as pg
 from scipy.fft import rfft, rfftfreq
-from scipy.signal import find_peaks
+from scipy.signal import find_peaks, hilbert
 
 # --- 采样率对应表 ---
 FS_TABLE = [500000, 200000, 100000, 50000, 20000, 10000, 5000, 2000, 1000]
+
+# --- ZPW-2000A 标准参数表 ---
+ZPW_STD_FC = {
+    1700: "下行",
+    2000: "上行",
+    2300: "下行",
+    2600: "上行"
+}
+
+ZPW_STD_FM = {
+    10.3: ("L5", "五级绿灯(最高速度)"),
+    11.4: ("L4", "四级绿灯"),
+    12.5: ("L3", "三级绿灯"),
+    13.6: ("L2", "二级绿灯"),
+    14.7: ("L", "一级绿灯(正常运行)"),
+    15.8: ("LU", "绿黄灯(预告减速)"),
+    16.9: ("U2", "黄灯+2(限速)"),
+    18.0: ("U", "黄灯(准备停车)"),
+    19.1: ("UU", "双黄灯(侧线进站)"),
+    20.2: ("UUS", "双黄闪(高速侧线)"),
+    21.3: ("HU", "红黄灯(立即停车)"),
+    22.4: ("HB", "红白灯(引导信号)"),
+    23.5: ("K1", "预留"),
+    24.6: ("K2", "预留"),
+    25.7: ("K3", "预留"),
+    26.8: ("H", "红灯(绝对停车)"),
+    27.9: ("JC", "检测码"),
+    29.0: ("SP", "特殊用途")
+}
 
 # --- 样式表 (Dark Theme) ---
 DARK_STYLESHEET = """
@@ -179,6 +209,28 @@ class SignalProcessor:
     @staticmethod
     def get_vpp(data):
         return np.ptp(data) if len(data) > 0 else 0
+
+    @staticmethod
+    def find_nearest(value, std_map, tolerance=None):
+        """
+        在标准映射表中查找最接近的值
+        :param value: 测量值
+        :param std_map: 标准值字典 {std_val: label}
+        :param tolerance: 允许的最大偏差 (绝对值)，None表示无限制
+        :return: (std_val, label, diff) or (None, None, diff)
+        """
+        if value <= 0:
+            return None, "未知", 0
+            
+        std_keys = np.array(list(std_map.keys()))
+        idx = (np.abs(std_keys - value)).argmin()
+        nearest = std_keys[idx]
+        diff = abs(value - nearest)
+        
+        if tolerance is not None and diff > tolerance:
+            return None, "未知", diff
+            
+        return nearest, std_map[nearest], diff
 
     @staticmethod
     def phase_delay_xcorr(data1, data2, fs, freq_hint=None):
@@ -388,6 +440,76 @@ class SignalProcessor:
                     
         return fs / true_idx
 
+    @staticmethod
+    def decode_zpw2000a(signal, fs):
+        """
+        ZPW-2000A 解码算法
+        :param signal: 输入信号数组
+        :param fs: 采样率
+        :return: (detected_fc, detected_fm, envelope, inst_freq_seq)
+        """
+        if len(signal) == 0:
+            return 0, 0, np.array([]), np.array([])
+
+        # a. 提取载频 (通过FFT)
+        fft_vals = np.abs(np.fft.rfft(signal))
+        freqs = np.fft.rfftfreq(len(signal), 1/fs)
+        if len(fft_vals) > 0:
+            detected_fc = freqs[np.argmax(fft_vals)]
+        else:
+            detected_fc = 0
+        
+        # b. 提取包络线 (希尔伯特变换)
+        try:
+            analytic_signal = hilbert(signal)
+            envelope = np.abs(analytic_signal)
+            
+            # c. 频率解调 (瞬时频率计算)
+            # 计算瞬时相位
+            instantaneous_phase = np.unwrap(np.angle(analytic_signal))
+            # 频率是相位的导数: f = (1/2pi) * d(phi)/dt
+            inst_freq_seq = np.diff(instantaneous_phase) / (2.0 * np.pi) * fs
+            
+            # d. 提取低频调制数据
+            if len(inst_freq_seq) > 10:
+                # 对解调出的瞬时频率序列进行FFT
+                fm_raw = inst_freq_seq - np.mean(inst_freq_seq)
+                
+                # 加窗减少频谱泄露
+                window = np.hanning(len(fm_raw))
+                fm_fft = np.abs(np.fft.rfft(fm_raw * window))
+                fm_freqs = np.fft.rfftfreq(len(fm_raw), 1/fs)
+                
+                # 锁定低频范围 (5Hz - 40Hz)
+                mask = (fm_freqs > 5) & (fm_freqs < 40)
+                
+                if np.any(mask):
+                    # 使用频谱重心法提高精度
+                    idx_masked = np.argmax(fm_fft[mask])
+                    full_indices = np.where(mask)[0]
+                    peak_idx = full_indices[idx_masked]
+                    
+                    if 0 < peak_idx < len(fm_fft) - 1:
+                        y = fm_fft[peak_idx-1 : peak_idx+2]
+                        x = fm_freqs[peak_idx-1 : peak_idx+2]
+                        if np.sum(y) != 0:
+                            detected_fm = np.sum(x * y) / np.sum(y)
+                        else:
+                            detected_fm = fm_freqs[peak_idx]
+                    else:
+                        detected_fm = fm_freqs[peak_idx]
+                else:
+                    detected_fm = 0
+            else:
+                detected_fm = 0
+                
+        except Exception:
+            envelope = np.zeros_like(signal)
+            inst_freq_seq = np.zeros_like(signal)
+            detected_fm = 0
+
+        return detected_fc, detected_fm, envelope, inst_freq_seq
+
 class DataWorker(QThread):
     """串口接收线程"""
     packet_ready = Signal(np.ndarray, np.ndarray, int)
@@ -473,6 +595,8 @@ class AuraScope(QMainWindow):
         
         self.double_buf_ch1 = []
         self.double_buf_ch2 = []
+        self.time_mode_buf_ch1 = []
+        self.time_mode_buf_ch2 = []
         self.rolling_ch1 = deque(maxlen=5000)
         self.rolling_ch2 = deque(maxlen=5000)
         self.mode_points = [1000, 2000, 5000]
@@ -551,11 +675,35 @@ class AuraScope(QMainWindow):
         gp_mode = QGroupBox("2. 采集模式")
         l_mode = QVBoxLayout()
         self.cb_display_mode = QComboBox()
-        self.cb_display_mode.addItems(["单包 (1k pts)", "双包 (2k pts)", "滚动 (5k pts)"])
+        self.cb_display_mode.addItems(["单包 (1k pts)", "双包 (2k pts)", "滚动 (5k pts)", "按时间采集"])
         self.cb_display_mode.currentIndexChanged.connect(self.on_mode_changed)
+
+        # 时间模式控制容器
+        self.container_time_mode = QWidget()
+        h_time_layout = QHBoxLayout(self.container_time_mode)
+        h_time_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.spin_time_duration = QDoubleSpinBox()
+        self.spin_time_duration.setPrefix("时长: ")
+        self.spin_time_duration.setSuffix(" s")
+        self.spin_time_duration.setRange(0.1, 10.0)
+        self.spin_time_duration.setSingleStep(0.1)
+        self.spin_time_duration.setValue(1.0)
+        
+        self.btn_time_refresh = QPushButton("刷新")
+        self.btn_time_refresh.setFixedWidth(50)
+        self.btn_time_refresh.clicked.connect(self.on_time_mode_refresh)
+        self.btn_time_refresh.setStyleSheet("padding: 4px;")
+        
+        h_time_layout.addWidget(self.spin_time_duration)
+        h_time_layout.addWidget(self.btn_time_refresh)
+        
+        self.container_time_mode.setVisible(False)
+
         self.chk_atten = QCheckBox("50x 探头衰减 (±300V)")
         self.chk_atten.toggled.connect(self.update_trigger_range)
         l_mode.addWidget(self.cb_display_mode)
+        l_mode.addWidget(self.container_time_mode)
         l_mode.addWidget(self.chk_atten)
         gp_mode.setLayout(l_mode)
         scroll_layout.addWidget(gp_mode)
@@ -704,6 +852,22 @@ class AuraScope(QMainWindow):
         gp_act.setLayout(l_act)
         scroll_layout.addWidget(gp_act)
 
+        # 8. 轨道信号与仿真
+        gp_track = QGroupBox("8. 轨道信号与仿真")
+        l_track = QVBoxLayout()
+        
+        self.chk_zpw_mode = QCheckBox("启用 ZPW-2000A 分析")
+        self.chk_zpw_mode.toggled.connect(self.on_zpw_mode_toggled)
+        l_track.addWidget(self.chk_zpw_mode)
+        
+        self.btn_sim_zpw = QPushButton("加载仿真信号")
+        self.btn_sim_zpw.clicked.connect(self.load_zpw_simulation)
+        self.btn_sim_zpw.setStyleSheet("background-color: #512da8;")
+        l_track.addWidget(self.btn_sim_zpw)
+        
+        gp_track.setLayout(l_track)
+        scroll_layout.addWidget(gp_track)
+
         # 填充底部空白
         scroll_layout.addStretch()
         scroll_area.setWidget(scroll_content)
@@ -761,6 +925,7 @@ class AuraScope(QMainWindow):
         # 曲线定义
         self.cur1 = self.p_t.plot(pen=pg.mkPen('#ffeb3b', width=1.5))
         self.cur2 = self.p_t.plot(pen=pg.mkPen('#00bcd4', width=1.5))
+        self.env_cur = self.p_t.plot(pen=pg.mkPen('#ff5252', width=2)) # 包络线
         
         # 触发线
         self.trig_line = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen('#e0e0e0', style=Qt.DashLine, width=1))
@@ -777,7 +942,16 @@ class AuraScope(QMainWindow):
         self.f_cur1 = self.p_f.plot(pen=pg.mkPen('#ffeb3b', width=1.2))
         self.f_cur2 = self.p_f.plot(pen=pg.mkPen('#00bcd4', width=1.2))
 
-        # 3. 测量光标 (默认隐藏)
+        # 3. 频率解调曲线 (默认隐藏，仅 ZPW 模式显示)
+        self.p_demod = self.win.addPlot(row=2, col=0, title="Demodulated Frequency")
+        self.p_demod.getAxis('left').setWidth(60)
+        self.p_demod.showGrid(x=True, y=True, alpha=0.2)
+        self.p_demod.setLabel('left', 'Freq', units='Hz')
+        self.p_demod.setLabel('bottom', 'Time', units='s')
+        self.p_demod.setVisible(False)
+        self.inst_f_cur = self.p_demod.plot(pen=pg.mkPen('#448aff', width=1.5))
+
+        # 4. 测量光标 (默认隐藏)
         # X轴光标 (Time)
         self.v_line1 = pg.InfiniteLine(angle=90, movable=True, pen=pg.mkPen('#ff00ff', width=1, style=Qt.DashDotLine))
         self.v_line2 = pg.InfiniteLine(angle=90, movable=True, pen=pg.mkPen('#ff00ff', width=1, style=Qt.DashDotLine))
@@ -816,8 +990,46 @@ class AuraScope(QMainWindow):
     def on_mode_changed(self, idx):
         self.double_buf_ch1.clear()
         self.double_buf_ch2.clear()
+        self.time_mode_buf_ch1.clear()
+        self.time_mode_buf_ch2.clear()
         self.rolling_ch1.clear()
         self.rolling_ch2.clear()
+        self.container_time_mode.setVisible(idx == 3)
+        if idx == 3:
+            self.on_time_mode_refresh()
+
+    def on_time_mode_refresh(self):
+        """刷新按时间采集的数据缓冲区"""
+        # 如果处于暂停状态（包括导入模式），则点击无效，避免清屏
+        if self.paused:
+            return
+
+        self.time_mode_buf_ch1.clear()
+        self.time_mode_buf_ch2.clear()
+        
+        # 视觉清空，表示重新开始
+        self.cur1.clear()
+        self.cur2.clear()
+        self.f_cur1.clear()
+        self.f_cur2.clear()
+        self.env_cur.clear()
+        self.inst_f_cur.clear()
+        
+        self.last_view_ch1 = None
+        self.last_view_ch2 = None
+        
+        # 更新状态提示
+        if not self.paused:
+             self.lbl_dash.setText("<br><br><center><span style='color:#4db6ac; font-size:11pt'>Waiting for data...</span></center>")
+
+    def on_zpw_mode_toggled(self, checked):
+        """切换 ZPW 模式时提供 UI 反馈"""
+        if checked:
+            self.lbl_dash.setText("<br><br><center><span style='color:#ff9800; font-size:12pt'><b>Running ZPW Analysis...</b></span><br><span style='color:#888'>This may take a moment for large datasets.</span></center>")
+            self.lbl_dash.repaint()
+            QApplication.processEvents()
+            
+        self.reprocess_view()
 
     def on_auto_range_clicked(self):
         self.chk_lock_x.setChecked(False)
@@ -901,6 +1113,9 @@ class AuraScope(QMainWindow):
 
     def on_pause_toggled(self, checked):
         self.paused = checked
+        if hasattr(self, 'btn_time_refresh'):
+            self.btn_time_refresh.setEnabled(not checked)
+            
         if checked:
             self.btn_pause.setText("继续 (RESUME)")
             self.btn_pause.setStyleSheet("background-color: #c62828; font-weight: bold;")
@@ -958,6 +1173,25 @@ class AuraScope(QMainWindow):
         elif mode == 2:
             self.rolling_ch1.extend(v1_base); self.rolling_ch2.extend(v2_base)
             f1, f2 = np.array(self.rolling_ch1), np.array(self.rolling_ch2)
+        elif mode == 3:
+            # 异常包过滤 (Vpp Check)
+            if self.enable_vpp_filter:
+                v_range = self.atten_volt_range if self.chk_atten.isChecked() else self.normal_volt_range
+                max_vpp = (v_range[1] - v_range[0]) * 1.2
+                if np.ptp(v1_base) > max_vpp or np.ptp(v2_base) > max_vpp:
+                    return
+
+            self.time_mode_buf_ch1.extend(v1_base)
+            self.time_mode_buf_ch2.extend(v2_base)
+            
+            target_pts = int(fs * self.spin_time_duration.value())
+            if len(self.time_mode_buf_ch1) >= target_pts:
+                f1 = np.array(self.time_mode_buf_ch1[:target_pts])
+                f2 = np.array(self.time_mode_buf_ch2[:target_pts])
+                self.time_mode_buf_ch1.clear()
+                self.time_mode_buf_ch2.clear()
+            else:
+                return
 
         if f1 is None: return
 
@@ -983,6 +1217,10 @@ class AuraScope(QMainWindow):
         algo = SignalProcessor.freq_acf if self.rad_acf.isChecked() else SignalProcessor.freq_schmitt
         ft1, ft2 = algo(v1_p, fs), algo(v2_p, fs)
         vpp1, vpp2 = SignalProcessor.get_vpp(v1_p), SignalProcessor.get_vpp(v2_p)
+        
+        # 计算极值用于空闲显示
+        v_max1, v_min1 = (np.max(v1_p), np.min(v1_p)) if len(v1_p) > 0 else (0, 0)
+        v_max2, v_min2 = (np.max(v2_p), np.min(v2_p)) if len(v2_p) > 0 else (0, 0)
         
         if self.enable_vpp_filter and not self.paused:
             v_range = self.atten_volt_range if is_atten else self.normal_volt_range
@@ -1019,6 +1257,26 @@ class AuraScope(QMainWindow):
             else:
                 phase = SignalProcessor.phase_delay_xcorr(v1_p, v2_p, fs, freq_hint if freq_hint > 0 else None)
 
+        # ZPW-2000A 处理
+        zpw_fc, zpw_fm = 0, 0
+        is_zpw = self.chk_zpw_mode.isChecked()
+        self.p_demod.setVisible(is_zpw)
+        self.env_cur.setVisible(is_zpw)
+
+        if is_zpw:
+            zpw_fc, zpw_fm, env, inst_freq = SignalProcessor.decode_zpw2000a(v1_p, fs)
+            # 更新包络线显示
+            t_axis = np.arange(len(env)) / fs
+            self.env_cur.setData(t_axis, env)
+            
+            # 更新解调频率曲线
+            if len(inst_freq) > 0:
+                t_freq = t_axis[1:] if len(t_axis) > len(inst_freq) else t_axis[:len(inst_freq)]
+                self.inst_f_cur.setData(t_freq, inst_freq)
+        else:
+            self.env_cur.clear()
+            self.inst_f_cur.clear()
+
         # 视觉平滑
         f1_disp = v1_p
         f2_disp = v2_p
@@ -1052,11 +1310,15 @@ class AuraScope(QMainWindow):
         style_w = "color:#e0e0e0"
         style_g = "color:#4db6ac"
         
+        # 动态调整布局：如果有光标，使用紧凑模式；否则使用舒适模式
+        has_cursors = self.chk_cursors_x.isChecked() or self.chk_cursors_y.isChecked()
+        line_height = "115%" if has_cursors else "130%"
+        
         # 基础表格
         html = f"""
-        <table width="100%" cellspacing="0" cellpadding="1" style="font-size:9pt; line-height:120%">
+        <table width="100%" cellspacing="0" cellpadding="0" style="font-size:9pt; line-height:{line_height}">
         <tr>
-            <td colspan="4" style="{style_g}; border-bottom:1px solid #444; padding-bottom:2px">
+            <td colspan="4" style="{style_g}; border-bottom:1px solid #444; padding-bottom:1px">
                 FS: {int(fs/1000)}kS/s | Span: {span_str}
             </td>
         </tr>
@@ -1073,30 +1335,73 @@ class AuraScope(QMainWindow):
             <td style="{style_w}">FFT:{ff2:.0f}Hz</td>
         </tr>
         <tr>
-            <td colspan="4" style="{style_w}; padding-bottom:2px">
+            <td colspan="4" style="{style_w}; padding-bottom:1px">
                 Phase(2-1): {f'{phase:.1f}°' if phase is not None else '--'} 
             </td>
         </tr>
         """
         
+        # ZPW 信息
+        if is_zpw:
+            # 模糊匹配载频 (允许 ±50Hz 偏差)
+            std_fc, label_fc, diff_fc = SignalProcessor.find_nearest(zpw_fc, ZPW_STD_FC, tolerance=50)
+            
+            # 模糊匹配低频 (允许 ±0.6Hz 偏差)
+            # find_nearest 返回的 label_fm 现在是 tuple (code, desc)
+            std_fm, info_fm, diff_fm = SignalProcessor.find_nearest(zpw_fm, ZPW_STD_FM, tolerance=0.6)
+            
+            # 准备显示数据
+            # 载频部分
+            if std_fc:
+                disp_fc = f"{label_fc} {std_fc}"
+                color_fc = "#448aff"
+            else:
+                disp_fc = "未知"
+                color_fc = "#888"
+            
+            # 低频部分
+            if std_fm:
+                code, desc = info_fm
+                disp_fm = f"{code} {std_fm}"
+                disp_desc = desc
+                color_fm = "#ff9800"
+            else:
+                disp_fm = "未知"
+                disp_desc = ""
+                color_fm = "#888"
+
+            # 格式化显示: ZPW [Carrier] ([Meas]) | [Code] [Freq] ([Meas]) [Desc]
+            html += f"""
+            <tr>
+                <td colspan="4" style="border-top:1px solid #444; padding-top:4px; font-size:10pt">
+                    <span style="color:{color_fc}"><b>ZPW {disp_fc}</b></span> 
+                    <span style="color:#aaa; font-size:9pt">({zpw_fc:.1f})</span>
+                    <span style="color:#666"> | </span>
+                    <span style="color:{color_fm}"><b>{disp_fm}</b></span>
+                    <span style="color:#aaa; font-size:9pt">({zpw_fm:.2f})</span>
+                    <span style="color:#ddd; font-size:9pt"> {disp_desc}</span>
+                </td>
+            </tr>
+            """
+
         # 光标部分
         has_cursor = False
         
         # X轴光标
         if self.chk_cursors_x.isChecked():
             if not has_cursor:
-                html += f"<tr><td colspan='4' style='border-top:1px solid #444; height:4px'></td></tr>"
+                # 移除额外高度，仅保留分割线
+                html += f"<tr><td colspan='4' style='border-top:1px solid #444;'></td></tr>"
                 has_cursor = True
                 
             t1 = self.v_line1.value()
             t2 = self.v_line2.value()
             dt = abs(t2 - t1)
-            freq_dt = 1.0/dt if dt > 0 else 0
             
             html += f"""
             <tr>
-                <td colspan="4" style="color:#ff00ff; white-space:nowrap; font-size:10pt">
-                    <b>[X]</b> T1:{t1*1000:.1f}ms | T2:{t2*1000:.1f}ms | <b>ΔT:{dt*1000:.1f}ms</b> | f:{freq_dt:.1f}Hz
+                <td colspan="4" style="color:#ff00ff; white-space:nowrap; font-size:9pt">
+                    <b>[X]</b> T1:{t1*1000:.1f}m | T2:{t2*1000:.1f}m | <b>Δ:{dt*1000:.1f}ms</b>
                 </td>
             </tr>
             """
@@ -1104,7 +1409,7 @@ class AuraScope(QMainWindow):
         # Y轴光标
         if self.chk_cursors_y.isChecked():
             if not has_cursor:
-                html += f"<tr><td colspan='4' style='border-top:1px solid #444; height:4px'></td></tr>"
+                html += f"<tr><td colspan='4' style='border-top:1px solid #444;'></td></tr>"
                 has_cursor = True
                 
             v1_c = self.h_line1.value()
@@ -1113,9 +1418,25 @@ class AuraScope(QMainWindow):
             
             html += f"""
             <tr>
-                <td colspan="4" style="color:#00ff00; white-space:nowrap; font-size:10pt">
-                    <b>[Y]</b> V1:{v1_c:.2f}V | V2:{v2_c:.2f}V | <b>ΔV:{dv:.2f}V</b>
+                <td colspan="4" style="color:#00ff00; white-space:nowrap; font-size:9pt">
+                    <b>[Y]</b> V1:{v1_c:.1f}V | V2:{v2_c:.1f}V | <b>Δ:{dv:.2f}V</b>
                 </td>
+            </tr>
+            """
+
+        # 如果没有开启任何光标，显示极值统计填补空白
+        if not has_cursor:
+             html += f"""
+            <tr><td colspan='4' style='border-top:1px solid #444;'></td></tr>
+            <tr>
+                <td style="{style_y}">CH1</td>
+                <td style="{style_w}">Max:{v_max1:.1f}V</td>
+                <td colspan="2" style="{style_w}">Min:{v_min1:.1f}V</td>
+            </tr>
+            <tr>
+                <td style="{style_c}">CH2</td>
+                <td style="{style_w}">Max:{v_max2:.1f}V</td>
+                <td colspan="2" style="{style_w}">Min:{v_min2:.1f}V</td>
             </tr>
             """
         
@@ -1179,6 +1500,33 @@ class AuraScope(QMainWindow):
                 pix.save(arrow_path)
             except Exception as e:
                 print(f"Failed to generate arrow icon: {e}")
+
+    def load_zpw_simulation(self):
+        """加载仿真信号"""
+        if not self.paused:
+            self.btn_pause.click()
+        
+        # 随机选择一个标准配置进行仿真
+        import random
+        sim_fc = random.choice(list(ZPW_STD_FC.keys()))
+        sim_fm = random.choice(list(ZPW_STD_FM.keys()))
+        
+        # 1700Hz 载频, 29Hz 低频
+        fs = 50000 
+        duration = 1.0 # 增加时长以提高频率分辨率 (1s数据 -> 1Hz分辨率)
+        t, sig, _ = SignalSimulator.generate_zpw2000a(fc=sim_fc, fm=sim_fm, duration=duration, fs=fs)
+        
+        # 模拟成 2Vpp 信号
+        v1 = sig
+        v2 = np.zeros_like(sig)
+        
+        self.chk_zpw_mode.setChecked(True)
+        self.process_and_plot(v1, v2, fs)
+        
+        label_fc = ZPW_STD_FC[sim_fc]
+        # ZPW_STD_FM values are now tuples (code, desc)
+        code, desc = ZPW_STD_FM[sim_fm]
+        self.setWindowTitle(f"AuraScope Viewer - [Simulation: {label_fc} {sim_fc}Hz | Code {code} ({sim_fm}Hz)]")
 
     def import_csv(self):
         path, _ = QFileDialog.getOpenFileName(self, "导入 CSV", "", "CSV Files (*.csv)")
