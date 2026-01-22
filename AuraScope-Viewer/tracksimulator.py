@@ -69,7 +69,9 @@ class SignalSimulator:
         return t, signal, mod_signal
 
     @staticmethod
-    def generate_25hz_phase(freq=25.0, phase_diff=90.0, duration=1.0, fs=200000, amp1=110.0, amp2=110.0, noise_std=0.0, interference_50hz=0.0):
+    def generate_25hz_phase(freq=25.0, phase_diff=90.0, duration=1.0, fs=200000, amp1=110.0, amp2=110.0, 
+                            noise_std1=0.0, interference_50hz1=0.0,
+                            noise_std2=0.0, interference_50hz2=0.0):
         """
         生成 25Hz 相敏轨道电路信号
         
@@ -80,8 +82,10 @@ class SignalSimulator:
         fs : 采样率 (Hz)
         amp1 : CH1 幅值 (V) - 局部电压
         amp2 : CH2 幅值 (V) - 轨道电压
-        noise_std : 高斯噪声标准差 (V)
-        interference_50hz : 50Hz 工频干扰幅值 (V) (仅添加到 CH2 轨道电压)
+        noise_std1 : CH1 高斯噪声标准差 (V)
+        interference_50hz1 : CH1 50Hz 工频干扰幅值 (V)
+        noise_std2 : CH2 高斯噪声标准差 (V)
+        interference_50hz2 : CH2 50Hz 工频干扰幅值 (V)
         
         返回:
         t : 时间轴数组
@@ -90,24 +94,25 @@ class SignalSimulator:
         """
         t = np.linspace(0, duration, int(fs * duration), endpoint=False)
         
-        # CH1: 参考信号 (局部电压) - 通常较纯净
+        # CH1: 参考信号 (局部电压)
         sig1 = amp1 * np.sin(2 * np.pi * freq * t)
         
-        # CH2: 轨道信号 (带相位差) - 易受干扰
+        # CH2: 轨道信号 (带相位差)
         # phase_diff is in degrees
         phi = np.deg2rad(phase_diff)
         sig2 = amp2 * np.sin(2 * np.pi * freq * t + phi)
         
-        # 添加干扰到 CH2 (轨道线圈输入)
-        if interference_50hz > 0:
-            # 50Hz 工频干扰 (随机相位或固定相位? 这里设为0相位)
-            sig2 += interference_50hz * np.sin(2 * np.pi * 50 * t)
-            
-        if noise_std > 0:
-            # 添加少量噪声到 CH1
-            sig1 += np.random.normal(0, noise_std * 0.1, size=len(t))
-            # 添加主要噪声到 CH2
-            sig2 += np.random.normal(0, noise_std, size=len(t))
+        # CH1 干扰
+        if interference_50hz1 > 0:
+            sig1 += interference_50hz1 * np.sin(2 * np.pi * 50 * t)
+        if noise_std1 > 0:
+            sig1 += np.random.normal(0, noise_std1, size=len(t))
+
+        # CH2 干扰
+        if interference_50hz2 > 0:
+            sig2 += interference_50hz2 * np.sin(2 * np.pi * 50 * t)
+        if noise_std2 > 0:
+            sig2 += np.random.normal(0, noise_std2, size=len(t))
         
         return t, sig1, sig2
 
@@ -179,27 +184,55 @@ class SimulatorApp(QWidget):
         self.gp_25hz.setLayout(l_25hz)
         layout.addWidget(self.gp_25hz)
 
-        # 3. 干扰设置 (新增)
-        gp_noise = QGroupBox("干扰与噪声")
+        # 3. 干扰设置 (分通道)
+        gp_noise = QGroupBox("干扰与噪声设置")
         l_noise = QVBoxLayout()
         
-        h_noise = QHBoxLayout()
-        h_noise.addWidget(QLabel("白噪声 (mV):"))
-        self.sb_noise = QDoubleSpinBox()
-        self.sb_noise.setRange(0.0, 5000.0)
-        self.sb_noise.setValue(50.0) # 默认 50mV 噪声
-        self.sb_noise.setSingleStep(10.0)
-        h_noise.addWidget(self.sb_noise)
-        l_noise.addLayout(h_noise)
+        # CH1 干扰设置
+        self.gp_noise_ch1 = QGroupBox("CH1 (ZPW信号 / 25Hz局部)")
+        l_noise_ch1 = QVBoxLayout()
         
-        h_int50 = QHBoxLayout()
-        h_int50.addWidget(QLabel("50Hz 干扰 (V):"))
-        self.sb_int50 = QDoubleSpinBox()
-        self.sb_int50.setRange(0.0, 200.0)
-        self.sb_int50.setValue(0.5) # 默认 0.5V 干扰
-        self.sb_int50.setSingleStep(0.1)
-        h_int50.addWidget(self.sb_int50)
-        l_noise.addLayout(h_int50)
+        h_n1 = QHBoxLayout()
+        h_n1.addWidget(QLabel("CH1 白噪声 (mV):"))
+        self.sb_noise_ch1 = QDoubleSpinBox()
+        self.sb_noise_ch1.setRange(0.0, 5000.0)
+        self.sb_noise_ch1.setValue(10.0) 
+        self.sb_noise_ch1.setSingleStep(10.0)
+        h_n1.addWidget(self.sb_noise_ch1)
+        
+        h_n1.addWidget(QLabel("CH1 50Hz干扰 (V):"))
+        self.sb_int50_ch1 = QDoubleSpinBox()
+        self.sb_int50_ch1.setRange(0.0, 200.0)
+        self.sb_int50_ch1.setValue(0.0)
+        self.sb_int50_ch1.setSingleStep(0.1)
+        h_n1.addWidget(self.sb_int50_ch1)
+        
+        l_noise_ch1.addLayout(h_n1)
+        self.gp_noise_ch1.setLayout(l_noise_ch1)
+        l_noise.addWidget(self.gp_noise_ch1)
+
+        # CH2 干扰设置
+        self.gp_noise_ch2 = QGroupBox("CH2 (25Hz轨道)")
+        l_noise_ch2 = QVBoxLayout()
+        
+        h_n2 = QHBoxLayout()
+        h_n2.addWidget(QLabel("CH2 白噪声 (mV):"))
+        self.sb_noise_ch2 = QDoubleSpinBox()
+        self.sb_noise_ch2.setRange(0.0, 5000.0)
+        self.sb_noise_ch2.setValue(50.0)
+        self.sb_noise_ch2.setSingleStep(10.0)
+        h_n2.addWidget(self.sb_noise_ch2)
+        
+        h_n2.addWidget(QLabel("CH2 50Hz干扰 (V):"))
+        self.sb_int50_ch2 = QDoubleSpinBox()
+        self.sb_int50_ch2.setRange(0.0, 200.0)
+        self.sb_int50_ch2.setValue(0.5)
+        self.sb_int50_ch2.setSingleStep(0.1)
+        h_n2.addWidget(self.sb_int50_ch2)
+        
+        l_noise_ch2.addLayout(h_n2)
+        self.gp_noise_ch2.setLayout(l_noise_ch2)
+        l_noise.addWidget(self.gp_noise_ch2)
         
         gp_noise.setLayout(l_noise)
         layout.addWidget(gp_noise)
@@ -265,16 +298,23 @@ class SimulatorApp(QWidget):
             self.gp_zpw.setVisible(True)
             self.gp_25hz.setVisible(False)
             self.lbl_amp.setText("幅值 (V):")
+            self.gp_noise_ch2.setVisible(False) # ZPW 主要是单通道
+            self.gp_noise_ch1.setTitle("信号干扰设置")
+            
             # Set sensible defaults for ZPW (轨面电压通常较低, 约 0.5V - 3V)
             if self.sb_amp.value() > 10.0:
                 self.sb_amp.setValue(1.5)
-            # ZPW 模式下 50Hz 干扰可能较小，但也存在不平衡电流
-            self.sb_int50.setValue(0.2)
+            # ZPW 模式下 50Hz 干扰可能较小
+            self.sb_int50_ch1.setValue(0.2)
             
         else: # 25Hz
             self.gp_zpw.setVisible(False)
             self.gp_25hz.setVisible(True)
             self.lbl_amp.setText("CH1 幅值 (V):")
+            self.gp_noise_ch2.setVisible(True)
+            self.gp_noise_ch1.setTitle("CH1 (局部) 干扰")
+            self.gp_noise_ch2.setTitle("CH2 (轨道) 干扰")
+
             # Set sensible defaults for 25Hz
             # CH1 局部电压 110V
             if self.sb_amp.value() < 10.0:
@@ -282,7 +322,7 @@ class SimulatorApp(QWidget):
             # CH2 轨道电压: 调整期约 18-24V，分路时 < 2.7V
             self.sb_amp2.setValue(18.0) 
             # 25Hz 模式下，50Hz 干扰是主要检测对象 (牵引电流谐波)
-            self.sb_int50.setValue(2.0)
+            self.sb_int50_ch2.setValue(2.0)
 
     def preview_waveform(self):
         try:
@@ -292,8 +332,10 @@ class SimulatorApp(QWidget):
             amp1 = self.sb_amp.value()
             
             # 获取干扰参数
-            noise_v = self.sb_noise.value() / 1000.0
-            int50_v = self.sb_int50.value()
+            noise_v1 = self.sb_noise_ch1.value() / 1000.0
+            int50_v1 = self.sb_int50_ch1.value()
+            noise_v2 = self.sb_noise_ch2.value() / 1000.0
+            int50_v2 = self.sb_int50_ch2.value()
             
             t = None
             ch1_sig = None
@@ -304,9 +346,10 @@ class SimulatorApp(QWidget):
                 fc = float(self.cb_fc.currentText())
                 fm = float(self.cb_fm.currentText())
                 
+                # ZPW-2000A 使用 CH1 的干扰设置
                 t, sig, mod = SignalSimulator.generate_zpw2000a(
                     fc=fc, fm=fm, duration=duration, fs=fs, amplitude=amp1,
-                    noise_std=noise_v, interference_50hz=int50_v
+                    noise_std=noise_v1, interference_50hz=int50_v1
                 )
                 ch1_sig = sig
                 ch2_sig = mod * (amp1 / 2) # Show modulation signal as CH2
@@ -318,7 +361,8 @@ class SimulatorApp(QWidget):
                 
                 t, ch1_sig, ch2_sig = SignalSimulator.generate_25hz_phase(
                     freq=25.0, phase_diff=phase, duration=duration, fs=fs, amp1=amp1, amp2=amp2,
-                    noise_std=noise_v, interference_50hz=int50_v
+                    noise_std1=noise_v1, interference_50hz1=int50_v1,
+                    noise_std2=noise_v2, interference_50hz2=int50_v2
                 )
                 title = f"25Hz Phase Preview (Phase={phase}°)"
 
@@ -355,8 +399,10 @@ class SimulatorApp(QWidget):
             is_50x = self.chk_atten.isChecked()
             
             # 获取干扰参数
-            noise_v = self.sb_noise.value() / 1000.0 # Convert mV to V
-            int50_v = self.sb_int50.value()
+            noise_v1 = self.sb_noise_ch1.value() / 1000.0 # Convert mV to V
+            int50_v1 = self.sb_int50_ch1.value()
+            noise_v2 = self.sb_noise_ch2.value() / 1000.0
+            int50_v2 = self.sb_int50_ch2.value()
             
             if mode == 0: # ZPW-2000A
                 fc = float(self.cb_fc.currentText())
@@ -364,14 +410,13 @@ class SimulatorApp(QWidget):
                 
                 t, sig, mod = SignalSimulator.generate_zpw2000a(
                     fc=fc, fm=fm, duration=duration, fs=fs, amplitude=amp1,
-                    noise_std=noise_v, interference_50hz=int50_v
+                    noise_std=noise_v1, interference_50hz=int50_v1
                 )
                 ch1_sig = sig
-                # CH2 设为调制方波 * (Amplitude/2)
                 ch2_sig = mod * (amp1 / 2)
                 
-                filename = f"ZPW2000A_Fc{int(fc)}_Fm{fm}_N{int(noise_v*1000)}mV.csv"
-                param_str = f"Fc={fc}Hz, Fm={fm}Hz, Noise={noise_v*1000}mV, Int50Hz={int50_v}V"
+                filename = f"ZPW2000A_Fc{int(fc)}_Fm{fm}_N{int(noise_v1*1000)}mV.csv"
+                param_str = f"Fc={fc}Hz, Fm={fm}Hz, Noise={noise_v1*1000}mV, Int50Hz={int50_v1}V"
                 
             else: # 25Hz Phase
                 phase = self.sb_phase.value()
@@ -379,11 +424,12 @@ class SimulatorApp(QWidget):
                 
                 t, ch1_sig, ch2_sig = SignalSimulator.generate_25hz_phase(
                     freq=25.0, phase_diff=phase, duration=duration, fs=fs, amp1=amp1, amp2=amp2,
-                    noise_std=noise_v, interference_50hz=int50_v
+                    noise_std1=noise_v1, interference_50hz1=int50_v1,
+                    noise_std2=noise_v2, interference_50hz2=int50_v2
                 )
                 
-                filename = f"25Hz_Phase{int(phase)}_N{int(noise_v*1000)}mV.csv"
-                param_str = f"Freq=25Hz, Phase={phase}deg, CH1={amp1}V, CH2={amp2}V, Noise={noise_v*1000}mV, Int50Hz={int50_v}V"
+                filename = f"25Hz_Phase{int(phase)}_N{int(noise_v2*1000)}mV.csv"
+                param_str = f"Freq=25Hz, Phase={phase}deg, CH1={amp1}V, CH2={amp2}V, N1={noise_v1*1000}mV, I1={int50_v1}V, N2={noise_v2*1000}mV, I2={int50_v2}V"
             
             # 准备导出
             path, _ = QFileDialog.getSaveFileName(self, "保存 CSV 文件", filename, "CSV Files (*.csv)")

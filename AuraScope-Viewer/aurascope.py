@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QComboBox, QPushButton, QLabel, 
                              QCheckBox, QRadioButton, QGroupBox, QSlider, QButtonGroup,
                              QFileDialog, QMessageBox, QScrollArea, QFrame,
-                             QSplitter)
+                             QSplitter, QDoubleSpinBox)
 import pyqtgraph as pg
 from scipy.fft import rfft, rfftfreq
 from scipy.signal import find_peaks
@@ -473,6 +473,8 @@ class AuraScope(QMainWindow):
         
         self.double_buf_ch1 = []
         self.double_buf_ch2 = []
+        self.time_mode_buf_ch1 = []
+        self.time_mode_buf_ch2 = []
         self.rolling_ch1 = deque(maxlen=5000)
         self.rolling_ch2 = deque(maxlen=5000)
         self.mode_points = [1000, 2000, 5000]
@@ -551,11 +553,35 @@ class AuraScope(QMainWindow):
         gp_mode = QGroupBox("2. 采集模式")
         l_mode = QVBoxLayout()
         self.cb_display_mode = QComboBox()
-        self.cb_display_mode.addItems(["单包 (1k pts)", "双包 (2k pts)", "滚动 (5k pts)"])
+        self.cb_display_mode.addItems(["单包 (1k pts)", "双包 (2k pts)", "滚动 (5k pts)", "按时间采集"])
         self.cb_display_mode.currentIndexChanged.connect(self.on_mode_changed)
+
+        # 时间模式控制容器
+        self.container_time_mode = QWidget()
+        h_time_layout = QHBoxLayout(self.container_time_mode)
+        h_time_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.spin_time_duration = QDoubleSpinBox()
+        self.spin_time_duration.setPrefix("时长: ")
+        self.spin_time_duration.setSuffix(" s")
+        self.spin_time_duration.setRange(0.1, 10.0)
+        self.spin_time_duration.setSingleStep(0.1)
+        self.spin_time_duration.setValue(1.0)
+        
+        self.btn_time_refresh = QPushButton("刷新")
+        self.btn_time_refresh.setFixedWidth(50)
+        self.btn_time_refresh.clicked.connect(self.on_time_mode_refresh)
+        self.btn_time_refresh.setStyleSheet("padding: 4px;")
+        
+        h_time_layout.addWidget(self.spin_time_duration)
+        h_time_layout.addWidget(self.btn_time_refresh)
+        
+        self.container_time_mode.setVisible(False)
+
         self.chk_atten = QCheckBox("50x 探头衰减 (±300V)")
         self.chk_atten.toggled.connect(self.update_trigger_range)
         l_mode.addWidget(self.cb_display_mode)
+        l_mode.addWidget(self.container_time_mode)
         l_mode.addWidget(self.chk_atten)
         gp_mode.setLayout(l_mode)
         scroll_layout.addWidget(gp_mode)
@@ -816,8 +842,37 @@ class AuraScope(QMainWindow):
     def on_mode_changed(self, idx):
         self.double_buf_ch1.clear()
         self.double_buf_ch2.clear()
+        self.time_mode_buf_ch1.clear()
+        self.time_mode_buf_ch2.clear()
         self.rolling_ch1.clear()
         self.rolling_ch2.clear()
+        self.container_time_mode.setVisible(idx == 3)
+        if idx == 3:
+            self.on_time_mode_refresh()
+
+    def on_time_mode_refresh(self):
+        """刷新按时间采集的数据缓冲区"""
+        # 如果处于暂停状态（包括导入模式），则点击无效，避免清屏
+        if self.paused:
+            return
+
+        self.time_mode_buf_ch1.clear()
+        self.time_mode_buf_ch2.clear()
+        
+        # 视觉清空，表示重新开始
+        self.cur1.clear()
+        self.cur2.clear()
+        self.f_cur1.clear()
+        self.f_cur2.clear()
+        if hasattr(self, 'env_cur'): self.env_cur.clear()
+        if hasattr(self, 'inst_f_cur'): self.inst_f_cur.clear()
+        
+        self.last_view_ch1 = None
+        self.last_view_ch2 = None
+        
+        # 更新状态提示
+        if not self.paused:
+             self.lbl_dash.setText("<br><br><center><span style='color:#4db6ac; font-size:11pt'>Waiting for data...</span></center>")
 
     def on_auto_range_clicked(self):
         self.chk_lock_x.setChecked(False)
@@ -958,6 +1013,25 @@ class AuraScope(QMainWindow):
         elif mode == 2:
             self.rolling_ch1.extend(v1_base); self.rolling_ch2.extend(v2_base)
             f1, f2 = np.array(self.rolling_ch1), np.array(self.rolling_ch2)
+        elif mode == 3:
+            # 异常包过滤 (Vpp Check)
+            if self.enable_vpp_filter:
+                v_range = self.atten_volt_range if self.chk_atten.isChecked() else self.normal_volt_range
+                max_vpp = (v_range[1] - v_range[0]) * 1.2
+                if np.ptp(v1_base) > max_vpp or np.ptp(v2_base) > max_vpp:
+                    return
+
+            self.time_mode_buf_ch1.extend(v1_base)
+            self.time_mode_buf_ch2.extend(v2_base)
+            
+            target_pts = int(fs * self.spin_time_duration.value())
+            if len(self.time_mode_buf_ch1) >= target_pts:
+                f1 = np.array(self.time_mode_buf_ch1[:target_pts])
+                f2 = np.array(self.time_mode_buf_ch2[:target_pts])
+                self.time_mode_buf_ch1.clear()
+                self.time_mode_buf_ch2.clear()
+            else:
+                return
 
         if f1 is None: return
 

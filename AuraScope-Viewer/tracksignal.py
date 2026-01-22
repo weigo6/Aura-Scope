@@ -7,7 +7,6 @@ import serial
 import serial.tools.list_ports
 import struct
 from collections import deque
-from signal_simulator import SignalSimulator
 
 # 核心 UI 库导入
 from PySide6.QtCore import Qt, QThread, Signal, Slot, QPointF
@@ -204,6 +203,49 @@ QLabel#Dashboard {
     font-size: 10pt;
 }
 """
+
+class SignalSimulator:
+    """
+    轨道信号模拟器 (内置版)
+    """
+
+    @staticmethod
+    def generate_zpw2000a(fc=1700, fm=29, df=11, duration=1.0, fs=200000, amplitude=1.0):
+        """
+        生成 ZPW-2000A 移频信号 (纯净版)
+        """
+        t = np.linspace(0, duration, int(fs * duration), endpoint=False)
+        
+        # 1. 生成调制方波: sin(2*pi*fm*t) > 0 时为 +1, < 0 时为 -1
+        mod_signal = np.sign(np.sin(2 * np.pi * fm * t))
+        
+        # 2. 计算瞬时频率
+        inst_freq = fc + mod_signal * df
+        
+        # 3. 计算相位 (频率的积分)
+        phase = 2 * np.pi * np.cumsum(inst_freq) / fs
+        
+        # 4. 生成调频信号
+        signal = amplitude * np.cos(phase)
+        
+        return t, signal, mod_signal
+
+    @staticmethod
+    def generate_25hz_phase(freq=25.0, phase_diff=90.0, duration=1.0, fs=200000, amp1=110.0, amp2=110.0):
+        """
+        生成 25Hz 相敏轨道电路信号 (纯净版)
+        """
+        t = np.linspace(0, duration, int(fs * duration), endpoint=False)
+        
+        # CH1: 参考信号 (局部电压)
+        sig1 = amp1 * np.sin(2 * np.pi * freq * t)
+        
+        # CH2: 轨道信号 (带相位差)
+        # phase_diff is in degrees
+        phi = np.deg2rad(phase_diff)
+        sig2 = amp2 * np.sin(2 * np.pi * freq * t + phi)
+        
+        return t, sig1, sig2
 
 class SignalProcessor:
     @staticmethod
@@ -509,6 +551,52 @@ class SignalProcessor:
             detected_fm = 0
 
         return detected_fc, detected_fm, envelope, inst_freq_seq
+
+    @staticmethod
+    def detect_power_interference(data, fs):
+        """
+        检测 50Hz 工频干扰
+        :return: (volts_50hz, ratio_percent, harmonics_str)
+        """
+        if len(data) < 10: return 0.0, 0.0, ""
+        
+        n = len(data)
+        # 去直流
+        yf = rfft(data - np.mean(data))
+        xf = rfftfreq(n, 1/fs)
+        m = np.abs(yf)
+        
+        if len(m) == 0 or np.max(m) == 0:
+            return 0.0, 0.0, ""
+
+        def get_mag_at(target_freq):
+            # 寻找最接近的频率分量
+            if len(xf) == 0: return 0.0
+            idx = np.argmin(np.abs(xf - target_freq))
+            # 如果频率分辨率不够(偏差太大)，则认为无法检测
+            if abs(xf[idx] - target_freq) < 5.0: # 允许 5Hz 偏差
+                return m[idx]
+            return 0.0
+
+        mag_50 = get_mag_at(50.0)
+        mag_100 = get_mag_at(100.0) # 2nd harmonic
+        mag_150 = get_mag_at(150.0) # 3rd harmonic
+        
+        # Calculate Volts (Approx Amplitude)
+        # FFT mag = A * N / 2  => A = mag * 2 / N
+        volts_50 = mag_50 * 2 / n
+        
+        # Calculate Ratio (Relative to Max Peak)
+        max_mag = np.max(m)
+        ratio = (mag_50 / max_mag) * 100.0 if max_mag > 0 else 0
+        
+        harmonics = []
+        if mag_100 > max_mag * 0.1: harmonics.append("100Hz")
+        if mag_150 > max_mag * 0.1: harmonics.append("150Hz")
+        
+        h_str = ",".join(harmonics) if harmonics else "None"
+        
+        return volts_50, ratio, h_str
 
 class DataWorker(QThread):
     """串口接收线程"""
@@ -860,10 +948,25 @@ class AuraScope(QMainWindow):
         self.chk_zpw_mode.toggled.connect(self.on_zpw_mode_toggled)
         l_track.addWidget(self.chk_zpw_mode)
         
-        self.btn_sim_zpw = QPushButton("加载仿真信号")
-        self.btn_sim_zpw.clicked.connect(self.load_zpw_simulation)
-        self.btn_sim_zpw.setStyleSheet("background-color: #512da8;")
-        l_track.addWidget(self.btn_sim_zpw)
+        # 仿真信号选择
+        h_sim = QHBoxLayout()
+        self.cb_sim_type = QComboBox()
+        self.cb_sim_type.addItems(["ZPW-2000A 移频信号", "25Hz 相敏轨道电路"])
+        h_sim.addWidget(self.cb_sim_type)
+        
+        self.btn_load_sim = QPushButton("加载仿真")
+        self.btn_load_sim.clicked.connect(self.load_simulation)
+        self.btn_load_sim.setStyleSheet("background-color: #512da8; font-weight: bold;")
+        h_sim.addWidget(self.btn_load_sim)
+        
+        l_track.addLayout(h_sim)
+
+        # 50Hz 工频干扰检测
+        self.btn_detect_50hz = QPushButton("50Hz 工频干扰检测")
+        self.btn_detect_50hz.setCheckable(True)
+        self.btn_detect_50hz.clicked.connect(self.on_detect_50hz_toggled)
+        self.btn_detect_50hz.setStyleSheet("background-color: #00796b;") 
+        l_track.addWidget(self.btn_detect_50hz)
         
         gp_track.setLayout(l_track)
         scroll_layout.addWidget(gp_track)
@@ -1025,10 +1128,25 @@ class AuraScope(QMainWindow):
     def on_zpw_mode_toggled(self, checked):
         """切换 ZPW 模式时提供 UI 反馈"""
         if checked:
+            # 互斥：关闭 50Hz 检测
+            if self.btn_detect_50hz.isChecked():
+                 self.btn_detect_50hz.setChecked(False)
+
             self.lbl_dash.setText("<br><br><center><span style='color:#ff9800; font-size:12pt'><b>Running ZPW Analysis...</b></span><br><span style='color:#888'>This may take a moment for large datasets.</span></center>")
             self.lbl_dash.repaint()
             QApplication.processEvents()
             
+        self.reprocess_view()
+
+    def on_detect_50hz_toggled(self, checked):
+        if checked:
+            # 互斥：关闭 ZPW 模式
+            if self.chk_zpw_mode.isChecked():
+                self.chk_zpw_mode.setChecked(False)
+            
+            self.lbl_dash.setText("<br><br><center><span style='color:#00796b; font-size:12pt'><b>Analyzing 50Hz Interference...</b></span></center>")
+            self.lbl_dash.repaint()
+            QApplication.processEvents()
         self.reprocess_view()
 
     def on_auto_range_clicked(self):
@@ -1260,6 +1378,8 @@ class AuraScope(QMainWindow):
         # ZPW-2000A 处理
         zpw_fc, zpw_fm = 0, 0
         is_zpw = self.chk_zpw_mode.isChecked()
+        is_50hz = self.btn_detect_50hz.isChecked()
+        
         self.p_demod.setVisible(is_zpw)
         self.env_cur.setVisible(is_zpw)
 
@@ -1384,6 +1504,27 @@ class AuraScope(QMainWindow):
             </tr>
             """
 
+        # 50Hz 干扰检测显示
+        if is_50hz:
+            v50_1, r50_1, h_1 = SignalProcessor.detect_power_interference(v1_p, fs)
+            v50_2, r50_2, h_2 = SignalProcessor.detect_power_interference(v2_p, fs)
+            
+            # 定义警告颜色 (如果占比超过 5% 则变红)
+            c1 = "#ff5252" if r50_1 > 5.0 else "#888"
+            c2 = "#ff5252" if r50_2 > 5.0 else "#888"
+            
+            html += f"""
+            <tr>
+                <td colspan="4" style="border-top:1px solid #444; padding-top:2px; font-size:9pt">
+                    <b style="color:#00796b">50Hz Check:</b><br>
+                    <span style="color:#ffeb3b">CH1:</span> <span style="color:{c1}">{v50_1:.2f}V ({r50_1:.1f}%)</span> 
+                    <span style="color:#666">Harm: {h_1}</span><br>
+                    <span style="color:#00bcd4">CH2:</span> <span style="color:{c2}">{v50_2:.2f}V ({r50_2:.1f}%)</span>
+                    <span style="color:#666">Harm: {h_2}</span>
+                </td>
+            </tr>
+            """
+
         # 光标部分
         has_cursor = False
         
@@ -1424,8 +1565,8 @@ class AuraScope(QMainWindow):
             </tr>
             """
 
-        # 如果没有开启任何光标，显示极值统计填补空白
-        if not has_cursor:
+        # 如果没有开启任何光标且不是 50Hz 模式，显示极值统计填补空白
+        if not has_cursor and not is_50hz:
              html += f"""
             <tr><td colspan='4' style='border-top:1px solid #444;'></td></tr>
             <tr>
@@ -1514,9 +1655,11 @@ class AuraScope(QMainWindow):
         # 1700Hz 载频, 29Hz 低频
         fs = 50000 
         duration = 1.0 # 增加时长以提高频率分辨率 (1s数据 -> 1Hz分辨率)
-        t, sig, _ = SignalSimulator.generate_zpw2000a(fc=sim_fc, fm=sim_fm, duration=duration, fs=fs)
         
-        # 模拟成 2Vpp 信号
+        # ZPW-2000A 典型轨面电压 (幅度约 1.5V, 即 3Vpp)
+        actual_amp = 1.5
+        t, sig, _ = SignalSimulator.generate_zpw2000a(fc=sim_fc, fm=sim_fm, duration=duration, fs=fs, amplitude=actual_amp)
+        
         v1 = sig
         v2 = np.zeros_like(sig)
         
@@ -1527,6 +1670,45 @@ class AuraScope(QMainWindow):
         # ZPW_STD_FM values are now tuples (code, desc)
         code, desc = ZPW_STD_FM[sim_fm]
         self.setWindowTitle(f"AuraScope Viewer - [Simulation: {label_fc} {sim_fc}Hz | Code {code} ({sim_fm}Hz)]")
+
+    def load_25hz_simulation(self):
+        """加载 25Hz 相敏轨道电路仿真信号"""
+        if not self.paused:
+            self.btn_pause.click()
+        
+        # 25Hz 相敏轨道电路参数
+        fs = 50000
+        duration = 1.0
+        phase = 90.0 # 标准相位差
+        
+        # 生成纯净信号 (无噪声)
+        # CH1: 局部电压 110V, CH2: 轨道电压 18V (模拟值)
+        t, sig1, sig2 = SignalSimulator.generate_25hz_phase(
+            freq=25.0, phase_diff=phase, duration=duration, fs=fs,
+            amp1=110.0, amp2=18.0
+        )
+        
+        # 自动切换到 50x 衰减模式以显示高压信号
+        self.chk_atten.setChecked(True)
+        
+        # 禁用 ZPW 模式
+        self.chk_zpw_mode.setChecked(False)
+        
+        # 模拟 50x 衰减后的输入电压 (Sig 是实际物理电压)
+        scale = 50.0
+        v1_base = sig1 / scale
+        v2_base = sig2 / scale
+        
+        self.process_and_plot(v1_base, v2_base, fs)
+        
+        self.setWindowTitle(f"AuraScope Viewer - [Simulation: 25Hz Phase Sensitive | Phase {phase}°]")
+
+    def load_simulation(self):
+        idx = self.cb_sim_type.currentIndex()
+        if idx == 0:
+            self.load_zpw_simulation()
+        elif idx == 1:
+            self.load_25hz_simulation()
 
     def import_csv(self):
         path, _ = QFileDialog.getOpenFileName(self, "导入 CSV", "", "CSV Files (*.csv)")
