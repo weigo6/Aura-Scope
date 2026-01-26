@@ -1014,6 +1014,10 @@ class AuraScope(QMainWindow):
         self.chk_zpw_mode.toggled.connect(self.on_zpw_mode_toggled)
         l_track.addWidget(self.chk_zpw_mode)
         
+        self.chk_25hz_mode = QCheckBox("启用 25Hz 相敏轨道电路分析")
+        self.chk_25hz_mode.toggled.connect(self.on_25hz_mode_toggled)
+        l_track.addWidget(self.chk_25hz_mode)
+        
         # 仿真信号选择
         h_sim = QHBoxLayout()
         self.cb_sim_type = QComboBox()
@@ -1197,6 +1201,8 @@ class AuraScope(QMainWindow):
             # 互斥：关闭 50Hz 检测
             if self.btn_detect_50hz.isChecked():
                  self.btn_detect_50hz.setChecked(False)
+            if self.chk_25hz_mode.isChecked():
+                self.chk_25hz_mode.setChecked(False)
 
             self.lbl_dash.setText("<br><br><center><span style='color:#ff9800; font-size:12pt'><b>Running ZPW Analysis...</b></span><br><span style='color:#888'>This may take a moment for large datasets.</span></center>")
             self.lbl_dash.repaint()
@@ -1204,11 +1210,25 @@ class AuraScope(QMainWindow):
             
         self.reprocess_view()
 
+    def on_25hz_mode_toggled(self, checked):
+        if checked:
+            if self.chk_zpw_mode.isChecked():
+                self.chk_zpw_mode.setChecked(False)
+            if self.btn_detect_50hz.isChecked():
+                self.btn_detect_50hz.setChecked(False)
+                
+            self.lbl_dash.setText("<br><br><center><span style='color:#ab47bc; font-size:12pt'><b>Analyzing 25Hz Phase Sensitive...</b></span></center>")
+            self.lbl_dash.repaint()
+            QApplication.processEvents()
+        self.reprocess_view()
+
     def on_detect_50hz_toggled(self, checked):
         if checked:
             # 互斥：关闭 ZPW 模式
             if self.chk_zpw_mode.isChecked():
                 self.chk_zpw_mode.setChecked(False)
+            if self.chk_25hz_mode.isChecked():
+                self.chk_25hz_mode.setChecked(False)
             
             self.lbl_dash.setText("<br><br><center><span style='color:#00796b; font-size:12pt'><b>Analyzing 50Hz Interference...</b></span></center>")
             self.lbl_dash.repaint()
@@ -1444,6 +1464,7 @@ class AuraScope(QMainWindow):
         # ZPW-2000A 处理
         zpw_fc, zpw_fm = 0, 0
         is_zpw = self.chk_zpw_mode.isChecked()
+        is_25hz = self.chk_25hz_mode.isChecked()
         is_50hz = self.btn_detect_50hz.isChecked()
         
         self.p_demod.setVisible(is_zpw)
@@ -1562,6 +1583,47 @@ class AuraScope(QMainWindow):
                     <span style="color:{color_fm}"><b>{disp_fm}</b></span>
                     <span style="color:#aaa; font-size:9pt">({zpw_fm:.2f})</span>
                     <span style="color:#ddd; font-size:9pt"> {disp_desc}</span>
+                </td>
+            </tr>
+            """
+            
+        # 25Hz 相敏轨道电路分析
+        if is_25hz:
+            rms1 = np.sqrt(np.mean(v1_p**2)) if len(v1_p) > 0 else 0
+            rms2 = np.sqrt(np.mean(v2_p**2)) if len(v2_p) > 0 else 0
+            
+            # 50Hz 干扰检测
+            v50_1, r50_1, h_1 = SignalProcessor.detect_power_interference(v1_p, fs)
+            v50_2, r50_2, h_2 = SignalProcessor.detect_power_interference(v2_p, fs)
+            
+            # 计算相位差 (CH2 relative to CH1)
+            phase = SignalProcessor.phase_fft(v1_p, v2_p, fs, freq_hint=25.0)
+            
+            c1 = "#ff5252" if r50_1 > 5.0 else "#888"
+            c2 = "#ff5252" if r50_2 > 5.0 else "#888"
+
+            # 25Hz 分析行
+            html += f"""
+            <tr>
+                <td colspan="4" style="border-top:1px solid #444; padding-top:2px; font-size:9pt">
+                    <span style="color:#ab47bc; font-weight:bold">25Hz Analysis</span>
+                    <span style="color:#666; font-size:8pt; float:right"> (RMS 电压有效值计算 & 50Hz 工频干扰检测 & 相位差)</span>
+                </td>
+            </tr>
+            <tr>
+                <td style="{style_y}">CH1</td>
+                <td colspan="3" style="{style_w}">
+                    RMS:<b>{rms1:.1f}V</b> <span style="color:#666">|</span> 50Hz:<span style="color:{c1}">{v50_1:.1f}V ({r50_1:.0f}%)</span>
+                    <span style="color:#666">&nbsp;&nbsp;|&nbsp;&nbsp;</span>
+                    <span style="color:#888; font-size:9pt">Ref: 0°</span>
+                </td>
+            </tr>
+            <tr>
+                <td style="{style_c}">CH2</td>
+                <td colspan="3" style="{style_w}">
+                    RMS:<b>{rms2:.1f}V</b> <span style="color:#666">|</span> 50Hz:<span style="color:{c2}">{v50_2:.1f}V ({r50_2:.0f}%)</span>
+                    <span style="color:#666">&nbsp;&nbsp;|&nbsp;&nbsp;</span>
+                    <span style="color:#e040fb; font-weight:bold">Diff: {phase:.1f}°</span>
                 </td>
             </tr>
             """
@@ -1752,8 +1814,8 @@ class AuraScope(QMainWindow):
         # 自动切换到 50x 衰减模式以显示高压信号
         self.chk_atten.setChecked(True)
         
-        # 禁用 ZPW 模式
-        self.chk_zpw_mode.setChecked(False)
+        # 启用 25Hz 模式 (会自动禁用 ZPW)
+        self.chk_25hz_mode.setChecked(True)
         
         # 模拟 50x 衰减后的输入电压 (Sig 是实际物理电压)
         scale = 50.0
