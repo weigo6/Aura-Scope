@@ -637,8 +637,8 @@ class AuraScope(QMainWindow):
         l_algo = QVBoxLayout()
         
         l_freq = QHBoxLayout()
-        self.rad_schmitt = QRadioButton("施密特")
-        self.rad_acf = QRadioButton("自相关")
+        self.rad_schmitt = QRadioButton("施密特测频")
+        self.rad_acf = QRadioButton("自相关测频")
         self.rad_schmitt.setChecked(True)
         self.algo_group = QButtonGroup(self)
         self.algo_group.addButton(self.rad_schmitt)
@@ -649,8 +649,8 @@ class AuraScope(QMainWindow):
         l_algo.addLayout(l_freq)
 
         l_fft = QHBoxLayout()
-        self.rad_fft_lin = QRadioButton("线性")
-        self.rad_fft_log = QRadioButton("对数(dB)")
+        self.rad_fft_lin = QRadioButton("线性坐标")
+        self.rad_fft_log = QRadioButton("对数(dB)坐标")
         self.rad_fft_lin.setChecked(True)
         self.fft_group = QButtonGroup(self)
         self.fft_group.addButton(self.rad_fft_lin)
@@ -661,8 +661,8 @@ class AuraScope(QMainWindow):
         l_algo.addLayout(l_fft)
 
         l_phase = QHBoxLayout()
-        self.rad_phase_xcorr = QRadioButton("XCorr相位")
-        self.rad_phase_fft = QRadioButton("FFT相位")
+        self.rad_phase_xcorr = QRadioButton("XCorr相位测量")
+        self.rad_phase_fft = QRadioButton("FFT相位测量")
         self.rad_phase_xcorr.setChecked(True)
         self.phase_group = QButtonGroup(self)
         self.phase_group.addButton(self.rad_phase_xcorr)
@@ -684,8 +684,8 @@ class AuraScope(QMainWindow):
         l_view.addWidget(self.btn_auto_range)
 
         h_lock = QHBoxLayout()
-        self.chk_lock_x = QCheckBox("锁X轴")
-        self.chk_lock_y = QCheckBox("锁Y轴")
+        self.chk_lock_x = QCheckBox("锁定X轴")
+        self.chk_lock_y = QCheckBox("锁定Y轴")
         self.chk_lock_x.toggled.connect(self.on_axis_lock_changed)
         self.chk_lock_y.toggled.connect(self.on_axis_lock_changed)
         h_lock.addWidget(self.chk_lock_x)
