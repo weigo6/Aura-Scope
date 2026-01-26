@@ -147,6 +147,12 @@ class SimulatorApp(QWidget):
         self.cb_fc = QComboBox()
         self.cb_fc.addItems([str(f) for f in SignalSimulator.CARRIERS])
         h_fc.addWidget(self.cb_fc)
+        
+        h_fc.addWidget(QLabel("频偏:"))
+        self.cb_offset = QComboBox()
+        self.cb_offset.addItems(["无 (Standard)", "-1 (+1.4Hz)", "-2 (-1.3Hz)"])
+        h_fc.addWidget(self.cb_offset)
+
         l_zpw.addLayout(h_fc)
         
         h_fm = QHBoxLayout()
@@ -245,7 +251,7 @@ class SimulatorApp(QWidget):
         h_fs.addWidget(QLabel("采样率 (Hz):"))
         self.sb_fs = QSpinBox()
         self.sb_fs.setRange(1000, 1000000)
-        self.sb_fs.setValue(200000)
+        self.sb_fs.setValue(50000)
         self.sb_fs.setSingleStep(10000)
         h_fs.addWidget(self.sb_fs)
         l_common.addLayout(h_fs)
@@ -305,7 +311,7 @@ class SimulatorApp(QWidget):
             if self.sb_amp.value() > 10.0:
                 self.sb_amp.setValue(1.5)
             # ZPW 模式下 50Hz 干扰可能较小
-            self.sb_int50_ch1.setValue(0.2)
+            self.sb_int50_ch1.setValue(0.0)
             
         else: # 25Hz
             self.gp_zpw.setVisible(False)
@@ -344,6 +350,14 @@ class SimulatorApp(QWidget):
             
             if mode == 0: # ZPW-2000A
                 fc = float(self.cb_fc.currentText())
+                
+                # Apply frequency offset
+                offset_idx = self.cb_offset.currentIndex()
+                if offset_idx == 1:
+                    fc += 1.4
+                elif offset_idx == 2:
+                    fc -= 1.3
+                    
                 fm = float(self.cb_fm.currentText())
                 
                 # ZPW-2000A 使用 CH1 的干扰设置
@@ -406,6 +420,14 @@ class SimulatorApp(QWidget):
             
             if mode == 0: # ZPW-2000A
                 fc = float(self.cb_fc.currentText())
+                
+                # Apply frequency offset
+                offset_idx = self.cb_offset.currentIndex()
+                if offset_idx == 1:
+                    fc += 1.4
+                elif offset_idx == 2:
+                    fc -= 1.3
+                    
                 fm = float(self.cb_fm.currentText())
                 
                 t, sig, mod = SignalSimulator.generate_zpw2000a(
@@ -416,7 +438,7 @@ class SimulatorApp(QWidget):
                 ch2_sig = mod * (amp1 / 2)
                 
                 filename = f"ZPW2000A_Fc{int(fc)}_Fm{fm}_N{int(noise_v1*1000)}mV.csv"
-                param_str = f"Fc={fc}Hz, Fm={fm}Hz, Noise={noise_v1*1000}mV, Int50Hz={int50_v1}V"
+                param_str = f"Fc={fc:.1f}Hz, Fm={fm}Hz, Noise={noise_v1*1000}mV, Int50Hz={int50_v1}V"
                 
             else: # 25Hz Phase
                 phase = self.sb_phase.value()

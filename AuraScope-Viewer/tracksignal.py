@@ -18,17 +18,29 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QSplitter, QDoubleSpinBox)
 import pyqtgraph as pg
 from scipy.fft import rfft, rfftfreq
-from scipy.signal import find_peaks, hilbert
+from scipy.signal import find_peaks, hilbert, filtfilt, medfilt, bessel
 
 # --- 采样率对应表 ---
 FS_TABLE = [500000, 200000, 100000, 50000, 20000, 10000, 5000, 2000, 1000]
 
 # --- ZPW-2000A 标准参数表 ---
+# -1 代表 +1.4Hz, -2 代表 -1.3Hz
 ZPW_STD_FC = {
-    1700: "下行",
-    2000: "上行",
-    2300: "下行",
-    2600: "上行"
+    1700: "1700 (下行)",
+    1701.4: "1700-1 (下行)",
+    1698.7: "1700-2 (下行)",
+    
+    2000: "2000 (上行)",
+    2001.4: "2000-1 (上行)",
+    1998.7: "2000-2 (上行)",
+    
+    2300: "2300 (下行)",
+    2301.4: "2300-1 (下行)",
+    2298.7: "2300-2 (下行)",
+    
+    2600: "2600 (上行)",
+    2601.4: "2600-1 (上行)",
+    2598.7: "2600-2 (上行)"
 }
 
 ZPW_STD_FM = {
@@ -210,7 +222,7 @@ class SignalSimulator:
     """
 
     @staticmethod
-    def generate_zpw2000a(fc=1700, fm=29, df=11, duration=1.0, fs=200000, amplitude=1.0):
+    def generate_zpw2000a(fc=1700, fm=29, df=11, duration=2.0, fs=20000, amplitude=1.0):
         """
         生成 ZPW-2000A 移频信号 (纯净版)
         """
@@ -485,32 +497,86 @@ class SignalProcessor:
     @staticmethod
     def decode_zpw2000a(signal, fs):
         """
-        ZPW-2000A 解码算法
+        ZPW-2000A 解码算法 (Enhanced with Bandpass Filter & Median Filter)
         :param signal: 输入信号数组
         :param fs: 采样率
-        :return: (detected_fc, detected_fm, envelope, inst_freq_seq)
+        :return: (detected_fc, detected_fm, inst_freq_seq)
         """
         if len(signal) == 0:
-            return 0, 0, np.array([]), np.array([])
+            return 0, 0, np.array([])
 
-        # a. 提取载频 (通过FFT)
+        # a. 提取载频 (粗测 - 通过FFT)
         fft_vals = np.abs(np.fft.rfft(signal))
         freqs = np.fft.rfftfreq(len(signal), 1/fs)
         if len(fft_vals) > 0:
-            detected_fc = freqs[np.argmax(fft_vals)]
+            # 忽略直流分量
+            fft_vals[0] = 0
+            idx_max = np.argmax(fft_vals)
+            detected_fc_coarse = freqs[idx_max]
         else:
-            detected_fc = 0
+            detected_fc_coarse = 0
+            
+        # 预处理：宽带通滤波 (Fixed Wideband Bessel Filter)
+        # 策略更改：不再跟踪载频，而是使用覆盖所有 ZPW 频段 (1700-2600Hz) 的固定宽带滤波器。
+        # 范围：600Hz - 6000Hz
+        # 优势1：通带极其平坦，彻底消除因滤波器中心不对齐导致的包络起伏 (AM效应)。
+        # 优势2：保留极其丰富的边带信息，使解调出的方波边缘如刀切般锋利。
+        try:
+            if detected_fc_coarse > 1000: # 确认是高频信号
+                nyquist = 0.5 * fs
+                # 保护：确保截止频率不超过 Nyquist
+                safe_high = min(6000, nyquist - 100)
+                
+                if safe_high > 600:
+                    # 使用 4 阶 Bessel 滤波器 (最佳时域响应)
+                    b, a = bessel(4, [600 / nyquist, safe_high / nyquist], btype='band')
+                    clean_signal = filtfilt(b, a, signal)
+                else:
+                    clean_signal = signal
+            else:
+                clean_signal = signal
+        except Exception:
+            clean_signal = signal
         
         # b. 提取包络线 (希尔伯特变换)
         try:
-            analytic_signal = hilbert(signal)
-            envelope = np.abs(analytic_signal)
+            analytic_signal = hilbert(clean_signal)
+            # 优化：不再计算包络线 (envelope)，避免误导用户
             
             # c. 频率解调 (瞬时频率计算)
-            # 计算瞬时相位
             instantaneous_phase = np.unwrap(np.angle(analytic_signal))
-            # 频率是相位的导数: f = (1/2pi) * d(phi)/dt
             inst_freq_seq = np.diff(instantaneous_phase) / (2.0 * np.pi) * fs
+            
+            # 关键改进：使用中值滤波 (Median Filter) 恢复方波边缘
+            # FSK 调制本质是方波跳变，中值滤波能有效去除微分噪声且不模糊边缘
+            if len(inst_freq_seq) > 20:
+                # 窗口大小约 fs / 8000 (0.125ms)
+                # 进一步减小窗口以获得极其陡峭的边沿
+                
+                # Step 1: Median Filter (去除脉冲噪声)
+                # 窗口必须是奇数
+                med_win = int(fs / 8000) 
+                if med_win < 3: med_win = 3
+                if med_win % 2 == 0: med_win += 1
+                
+                inst_freq_seq = medfilt(inst_freq_seq, med_win)
+                
+                # Step 2: Removed Moving Average (已移除移动平均以保持方波陡峭边缘)
+
+            # 精确载频计算 (基于解调后的频率平均值)
+            # 剔除异常值后取平均
+            if len(inst_freq_seq) > 100:
+                # 简单的均值通常足够精确，因为 +/- df 是对称的
+                # 但为了鲁棒性，取中间 80% 的数据
+                sorted_freqs = np.sort(inst_freq_seq)
+                trim_cnt = int(len(sorted_freqs) * 0.1)
+                valid_freqs = sorted_freqs[trim_cnt:-trim_cnt]
+                if len(valid_freqs) > 0:
+                    detected_fc = np.mean(valid_freqs)
+                else:
+                    detected_fc = detected_fc_coarse
+            else:
+                detected_fc = detected_fc_coarse
             
             # d. 提取低频调制数据
             if len(inst_freq_seq) > 10:
@@ -546,11 +612,11 @@ class SignalProcessor:
                 detected_fm = 0
                 
         except Exception:
-            envelope = np.zeros_like(signal)
             inst_freq_seq = np.zeros_like(signal)
             detected_fm = 0
+            detected_fc = 0
 
-        return detected_fc, detected_fm, envelope, inst_freq_seq
+        return detected_fc, detected_fm, inst_freq_seq
 
     @staticmethod
     def detect_power_interference(data, fs):
@@ -655,7 +721,7 @@ class DataWorker(QThread):
 class AuraScope(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("AuraScope Pro - STM32 Signal Analyzer")
+        self.setWindowTitle("AuraScope - Track Signal Analyzer")
         self.resize(1280, 800)
         
         # 处理资源路径和样式表
@@ -847,8 +913,8 @@ class AuraScope(QMainWindow):
         l_algo = QVBoxLayout()
         
         l_freq = QHBoxLayout()
-        self.rad_schmitt = QRadioButton("施密特")
-        self.rad_acf = QRadioButton("自相关")
+        self.rad_schmitt = QRadioButton("施密特测频")
+        self.rad_acf = QRadioButton("自相关测频")
         self.rad_schmitt.setChecked(True)
         self.algo_group = QButtonGroup(self)
         self.algo_group.addButton(self.rad_schmitt)
@@ -859,8 +925,8 @@ class AuraScope(QMainWindow):
         l_algo.addLayout(l_freq)
 
         l_fft = QHBoxLayout()
-        self.rad_fft_lin = QRadioButton("线性")
-        self.rad_fft_log = QRadioButton("对数(dB)")
+        self.rad_fft_lin = QRadioButton("线性坐标")
+        self.rad_fft_log = QRadioButton("对数(dB)坐标")
         self.rad_fft_lin.setChecked(True)
         self.fft_group = QButtonGroup(self)
         self.fft_group.addButton(self.rad_fft_lin)
@@ -871,8 +937,8 @@ class AuraScope(QMainWindow):
         l_algo.addLayout(l_fft)
 
         l_phase = QHBoxLayout()
-        self.rad_phase_xcorr = QRadioButton("XCorr相位")
-        self.rad_phase_fft = QRadioButton("FFT相位")
+        self.rad_phase_xcorr = QRadioButton("XCorr相位测量")
+        self.rad_phase_fft = QRadioButton("FFT相位测量")
         self.rad_phase_xcorr.setChecked(True)
         self.phase_group = QButtonGroup(self)
         self.phase_group.addButton(self.rad_phase_xcorr)
@@ -894,8 +960,8 @@ class AuraScope(QMainWindow):
         l_view.addWidget(self.btn_auto_range)
 
         h_lock = QHBoxLayout()
-        self.chk_lock_x = QCheckBox("锁X轴")
-        self.chk_lock_y = QCheckBox("锁Y轴")
+        self.chk_lock_x = QCheckBox("锁定X轴")
+        self.chk_lock_y = QCheckBox("锁定Y轴")
         self.chk_lock_x.toggled.connect(self.on_axis_lock_changed)
         self.chk_lock_y.toggled.connect(self.on_axis_lock_changed)
         h_lock.addWidget(self.chk_lock_x)
@@ -1028,7 +1094,7 @@ class AuraScope(QMainWindow):
         # 曲线定义
         self.cur1 = self.p_t.plot(pen=pg.mkPen('#ffeb3b', width=1.5))
         self.cur2 = self.p_t.plot(pen=pg.mkPen('#00bcd4', width=1.5))
-        self.env_cur = self.p_t.plot(pen=pg.mkPen('#ff5252', width=2)) # 包络线
+        # self.env_cur = self.p_t.plot(pen=pg.mkPen('#ff5252', width=2)) # 包络线 (已移除)
         
         # 触发线
         self.trig_line = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen('#e0e0e0', style=Qt.DashLine, width=1))
@@ -1115,7 +1181,7 @@ class AuraScope(QMainWindow):
         self.cur2.clear()
         self.f_cur1.clear()
         self.f_cur2.clear()
-        self.env_cur.clear()
+        # self.env_cur.clear()
         self.inst_f_cur.clear()
         
         self.last_view_ch1 = None
@@ -1381,20 +1447,16 @@ class AuraScope(QMainWindow):
         is_50hz = self.btn_detect_50hz.isChecked()
         
         self.p_demod.setVisible(is_zpw)
-        self.env_cur.setVisible(is_zpw)
 
         if is_zpw:
-            zpw_fc, zpw_fm, env, inst_freq = SignalProcessor.decode_zpw2000a(v1_p, fs)
-            # 更新包络线显示
-            t_axis = np.arange(len(env)) / fs
-            self.env_cur.setData(t_axis, env)
+            zpw_fc, zpw_fm, inst_freq = SignalProcessor.decode_zpw2000a(v1_p, fs)
             
             # 更新解调频率曲线
             if len(inst_freq) > 0:
-                t_freq = t_axis[1:] if len(t_axis) > len(inst_freq) else t_axis[:len(inst_freq)]
+                # 直接根据频率序列长度生成时间轴
+                t_freq = np.arange(len(inst_freq)) / fs
                 self.inst_f_cur.setData(t_freq, inst_freq)
         else:
-            self.env_cur.clear()
             self.inst_f_cur.clear()
 
         # 视觉平滑
@@ -1445,13 +1507,13 @@ class AuraScope(QMainWindow):
         <tr>
             <td style="{style_y}; width:30px">CH1</td>
             <td style="{style_w}">Vpp:{vpp1:.1f}V</td>
-            <td style="{style_w}">F:{ft1:.0f}Hz</td>
+            <td style="{style_w}">F:{ft1:.1f}Hz</td>
             <td style="{style_w}">FFT:{ff1:.0f}Hz</td>
         </tr>
         <tr>
             <td style="{style_c}">CH2</td>
             <td style="{style_w}">Vpp:{vpp2:.1f}V</td>
-            <td style="{style_w}">F:{ft2:.0f}Hz</td>
+            <td style="{style_w}">F:{ft2:.1f}Hz</td>
             <td style="{style_w}">FFT:{ff2:.0f}Hz</td>
         </tr>
         <tr>
@@ -1495,7 +1557,7 @@ class AuraScope(QMainWindow):
             <tr>
                 <td colspan="4" style="border-top:1px solid #444; padding-top:4px; font-size:10pt">
                     <span style="color:{color_fc}"><b>ZPW {disp_fc}</b></span> 
-                    <span style="color:#aaa; font-size:9pt">({zpw_fc:.1f})</span>
+                    <span style="color:#aaa; font-size:9pt">({zpw_fc:.1f}Hz)</span>
                     <span style="color:#666"> | </span>
                     <span style="color:{color_fm}"><b>{disp_fm}</b></span>
                     <span style="color:#aaa; font-size:9pt">({zpw_fm:.2f})</span>
@@ -1517,10 +1579,10 @@ class AuraScope(QMainWindow):
             <tr>
                 <td colspan="4" style="border-top:1px solid #444; padding-top:2px; font-size:9pt">
                     <b style="color:#00796b">50Hz Check:</b><br>
-                    <span style="color:#ffeb3b">CH1:</span> <span style="color:{c1}">{v50_1:.2f}V ({r50_1:.1f}%)</span> 
-                    <span style="color:#666">Harm: {h_1}</span><br>
-                    <span style="color:#00bcd4">CH2:</span> <span style="color:{c2}">{v50_2:.2f}V ({r50_2:.1f}%)</span>
-                    <span style="color:#666">Harm: {h_2}</span>
+                    <span style="color:#ffeb3b">CH1:</span> <span style="color:{c1}">50 Hz 干扰 {v50_1:.2f}V ({r50_1:.1f}%)</span> 
+                    <span style="color:#666">谐波: {h_1}</span><br>
+                    <span style="color:#00bcd4">CH2:</span> <span style="color:{c2}">50 Hz 干扰 {v50_2:.2f}V ({r50_2:.1f}%)</span>
+                    <span style="color:#666">谐波: {h_2}</span>
                 </td>
             </tr>
             """
@@ -1651,10 +1713,9 @@ class AuraScope(QMainWindow):
         import random
         sim_fc = random.choice(list(ZPW_STD_FC.keys()))
         sim_fm = random.choice(list(ZPW_STD_FM.keys()))
-        
-        # 1700Hz 载频, 29Hz 低频
-        fs = 50000 
-        duration = 1.0 # 增加时长以提高频率分辨率 (1s数据 -> 1Hz分辨率)
+
+        fs = 50000
+        duration = 2.0 # 增加时长以提高频率分辨率 (2s数据 -> 0.5Hz分辨率)
         
         # ZPW-2000A 典型轨面电压 (幅度约 1.5V, 即 3Vpp)
         actual_amp = 1.5
@@ -1796,6 +1857,14 @@ class AuraScope(QMainWindow):
            </ul>
         </p>
         <p><b>7. 操作</b>: 暂停波形刷新，导出/导入 CSV 数据以供分析。</p>
+        <p><b>8. 轨道信号与仿真</b>:
+           <ul>
+           <li><b>移频分析 (ZPW-2000A)</b>: 自动解调包络，识别载频与低频编码（如 L5, HU 等）。</li>
+           <li><b>25Hz 相敏</b>: 测量两路信号（轨道与局部）的相位差，判断相位角。</li>
+           <li><b>谐波监测</b>: 监测 50Hz 干扰与谐波含量，判断牵引电流影响。</li>
+           <li><b>仿真功能</b>: 生成标准轨道电路波形，用于无需硬件的演示与算法验证。</li>
+           </ul>
+        </p>
         """
         QMessageBox.about(self, "帮助与说明", help_text)
 

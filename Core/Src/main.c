@@ -155,21 +155,6 @@ int main(void)
     /* USER CODE BEGIN 3 */
     // Process Oscilloscope Data (Trigger, Scaling, Vpp)
     OSC_Process();
-    
-    // UI Refresh Loop
-    // 注意：UI_Refresh 仅在状态改变时重绘。
-    // 波形刷新需要显式调用 UI_Refresh 或者单独的波形刷新函数?
-    // UI_Refresh() 调用 UI_DrawOscilloscope() -> OSC_DrawWaveform()
-    // 所以在 osc_app.c 的 Process 之后调用 UI_Refresh() 即可
-    // 但为了性能，只有在 ADC 完成后才刷新
-    // Check internal state of OSC?
-    // 我们可以简单地周期性调用 UI_Refresh，或者根据 OSC 状态。
-    // 但由于 OSC_Process 清除 osc_adc_cplt_flag，我们在这里无法知道是否刚刚处理完。
-    // 简单起见，如果状态是 SCOPE 且运行中，我们调用 UI_Refresh。
-    // 或者更好：OSC_Process 返回 true 如果有新数据?
-    
-    // 目前 OSC_DrawWaveform 内部检查数据。
-    // 我们总是调用 UI_Refresh 来驱动动画?
     UI_Refresh();
 
     // 如果没有外部交互且波形刚处理完，可以适当减小延迟以提升帧率
@@ -177,8 +162,6 @@ int main(void)
     if (key_pressed) {
         UI_HandleKey(key_pressed);
         key_pressed = 0;
-        // UI_Refresh done above or here?
-        // UI_Refresh(); // Removed redundant refresh
     }
     if (encoder_delta != 0) {
         UI_HandleEncoder(encoder_delta);
