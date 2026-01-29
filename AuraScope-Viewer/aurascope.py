@@ -446,7 +446,7 @@ class DataWorker(QThread):
 class AuraScope(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("AuraScope Pro - STM32 Signal Analyzer")
+        self.setWindowTitle("AuraScope - STM32 Signal Analyzer")
         self.resize(1280, 800)
         
         # 处理资源路径和样式表
@@ -480,6 +480,7 @@ class AuraScope(QMainWindow):
         self.rolling_ch2 = deque(maxlen=5000)
         self.mode_points = [1000, 2000, 5000]
         self.normal_volt_range = (-6.0, 6.0)
+        self.x10_volt_range = (-60.0, 60.0)
         self.atten_volt_range = (-300.0, 300.0)
         self.last_vpp1 = None
         self.last_vpp2 = None
@@ -597,7 +598,7 @@ class AuraScope(QMainWindow):
         h_scale = QHBoxLayout()
         h_scale.addWidget(QLabel("探头倍率:"))
         self.cb_probe_scale = QComboBox()
-        self.cb_probe_scale.addItems(["x1", "x50", "x100"])
+        self.cb_probe_scale.addItems(["x1", "x10", "x50", "x100"])
         self.cb_probe_scale.currentTextChanged.connect(self.on_scale_changed)
         h_scale.addWidget(self.cb_probe_scale)
 
@@ -1002,7 +1003,11 @@ class AuraScope(QMainWindow):
         self.spin_ch2_off.blockSignals(False)
         self.spin_ch2_gain.blockSignals(False)
         
-        # 5. 更新触发电平和视图
+        # 5. 清除 Vpp 过滤历史，防止因量程突变导致画面卡住
+        self.last_vpp1 = None
+        self.last_vpp2 = None
+
+        # 6. 更新触发电平和视图
         self.update_trigger_range()
 
     def refresh_ports(self):
@@ -1218,6 +1223,7 @@ class AuraScope(QMainWindow):
         else:
             self.btn_pause.setText("暂停 (PAUSE)")
             self.btn_pause.setStyleSheet("")
+            self.setWindowTitle("AuraScope - STM32 Signal Analyzer")
 
     def toggle_serial(self):
         if not self.is_connected:
@@ -1266,9 +1272,13 @@ class AuraScope(QMainWindow):
             is_valid = True
             if self.enable_vpp_filter:
                 try:
-                    is_atten = float(self.cb_probe_scale.currentText()[1:]) >= 50
-                except: is_atten = False
-                v_range = self.atten_volt_range if is_atten else self.normal_volt_range
+                    scale_val = float(self.cb_probe_scale.currentText()[1:])
+                except: scale_val = 1.0
+                
+                if scale_val >= 50: v_range = self.atten_volt_range
+                elif scale_val >= 10: v_range = self.x10_volt_range
+                else: v_range = self.normal_volt_range
+                
                 max_vpp = (v_range[1] - v_range[0]) * 1.2
                 if vpp1 > max_vpp or vpp2 > max_vpp:
                     is_valid = False
@@ -1330,17 +1340,21 @@ class AuraScope(QMainWindow):
                 
                 if self.cal_active_ch1 and self.cal_samples_ch1:
                     measured1 = np.mean(self.cal_samples_ch1)
-                    if abs(measured1) > 0.01:
+                    if abs(measured1) > 0.001:
                         ratio1 = target_v / (measured1 * scale)
                         self.ch1_gain *= ratio1
                         msg_details += f"CH1 实测: {measured1*scale:.3f}V -> 新 Gain: {self.ch1_gain:.3f}\n"
+                    else:
+                        msg_details += f"CH1 实测: {measured1*scale:.3f}V (信号过小, 跳过)\n"
                 
                 if self.cal_active_ch2 and self.cal_samples_ch2:
                     measured2 = np.mean(self.cal_samples_ch2)
-                    if abs(measured2) > 0.01:
+                    if abs(measured2) > 0.001:
                         ratio2 = target_v / (measured2 * scale)
                         self.ch2_gain *= ratio2
                         msg_details += f"CH2 实测: {measured2*scale:.3f}V -> 新 Gain: {self.ch2_gain:.3f}\n"
+                    else:
+                        msg_details += f"CH2 实测: {measured2*scale:.3f}V (信号过小, 跳过)\n"
                 
                 self.is_calibrating_gain = False
                 
@@ -1379,9 +1393,13 @@ class AuraScope(QMainWindow):
             # 异常包过滤 (Vpp Check)
             if self.enable_vpp_filter:
                 try:
-                    is_atten = float(self.cb_probe_scale.currentText()[1:]) >= 50
-                except: is_atten = False
-                v_range = self.atten_volt_range if is_atten else self.normal_volt_range
+                    scale_val = float(self.cb_probe_scale.currentText()[1:])
+                except: scale_val = 1.0
+                
+                if scale_val >= 50: v_range = self.atten_volt_range
+                elif scale_val >= 10: v_range = self.x10_volt_range
+                else: v_range = self.normal_volt_range
+                
                 max_vpp = (v_range[1] - v_range[0]) * 1.2
                 if np.ptp(v1_base) > max_vpp or np.ptp(v2_base) > max_vpp:
                     return
@@ -1420,7 +1438,6 @@ class AuraScope(QMainWindow):
         except:
             scale = 1.0
             
-        is_atten = scale >= 50
         v1_p = v1_base * scale
         v2_p = v2_base * scale
 
@@ -1429,7 +1446,10 @@ class AuraScope(QMainWindow):
         vpp1, vpp2 = SignalProcessor.get_vpp(v1_p), SignalProcessor.get_vpp(v2_p)
         
         if self.enable_vpp_filter and not self.paused:
-            v_range = self.atten_volt_range if is_atten else self.normal_volt_range
+            if scale >= 50: v_range = self.atten_volt_range
+            elif scale >= 10: v_range = self.x10_volt_range
+            else: v_range = self.normal_volt_range
+            
             max_vpp = (v_range[1] - v_range[0]) * 1.2
             if vpp1 > max_vpp or vpp2 > max_vpp:
                 return
@@ -1486,6 +1506,9 @@ class AuraScope(QMainWindow):
             self.f_cur2.setData(xf2, mf2)
 
         # 构建 Dashboard
+        # 辅助函数：生成固定宽度的数值字符串 (用 &nbsp; 填充)
+        fmt = lambda v, f: f"{v:{f}}".replace(' ', '&nbsp;')
+
         span_s = len(f1_disp) / fs if fs > 0 else 0
         if span_s >= 1.0: span_str = f"{span_s:.2f}s"
         elif span_s >= 1e-3: span_str = f"{span_s*1000:.2f}ms"
@@ -1498,27 +1521,27 @@ class AuraScope(QMainWindow):
         
         # 基础表格
         html = f"""
-        <table width="100%" cellspacing="0" cellpadding="1" style="font-size:9pt; line-height:120%">
+        <table width="100%" cellspacing="0" cellpadding="1" style="font-size:9pt; line-height:120%; table-layout:fixed">
         <tr>
             <td colspan="4" style="{style_g}; border-bottom:1px solid #444; padding-bottom:2px">
                 FS: {int(fs/1000)}kS/s | Span: {span_str}
             </td>
         </tr>
         <tr>
-            <td style="{style_y}; width:30px">CH1</td>
-            <td style="{style_w}">Vpp:{vpp1:.1f}V</td>
-            <td style="{style_w}">F:{ft1:.0f}Hz</td>
-            <td style="{style_w}">FFT:{ff1:.0f}Hz</td>
+            <td width="15%" style="{style_y}">CH1</td>
+            <td width="28%" style="{style_w}">Vpp:{fmt(vpp1, '5.1f')}V</td>
+            <td width="28%" style="{style_w}">F:{fmt(ft1, '5.0f')}Hz</td>
+            <td width="29%" style="{style_w}">FFT:{fmt(ff1, '5.0f')}Hz</td>
         </tr>
         <tr>
             <td style="{style_c}">CH2</td>
-            <td style="{style_w}">Vpp:{vpp2:.1f}V</td>
-            <td style="{style_w}">F:{ft2:.0f}Hz</td>
-            <td style="{style_w}">FFT:{ff2:.0f}Hz</td>
+            <td style="{style_w}">Vpp:{fmt(vpp2, '5.1f')}V</td>
+            <td style="{style_w}">F:{fmt(ft2, '5.0f')}Hz</td>
+            <td style="{style_w}">FFT:{fmt(ff2, '5.0f')}Hz</td>
         </tr>
         <tr>
             <td colspan="4" style="{style_w}; padding-bottom:2px">
-                Phase(2-1): {f'{phase:.1f}°' if phase is not None else '--'} 
+                Phase(2-1): {f'{phase:5.1f}°'.replace(' ', '&nbsp;') if phase is not None else '--'} 
             </td>
         </tr>
         """
@@ -1650,7 +1673,9 @@ class AuraScope(QMainWindow):
                             try: fs = float(line.split(':')[-1].strip())
                             except: pass
                         if "attenuation" in line:
-                            if "50x" in line: file_scale = 50.0
+                            if "100x" in line or "x100" in line: file_scale = 100.0
+                            elif "50x" in line or "x50" in line: file_scale = 50.0
+                            elif "10x" in line or "x10" in line: file_scale = 10.0
                     elif row[0].lower().startswith('time'):
                         continue 
                     else:
@@ -1671,6 +1696,7 @@ class AuraScope(QMainWindow):
                 self.cb_probe_scale.blockSignals(True)
                 if file_scale == 50.0: self.cb_probe_scale.setCurrentText("x50")
                 elif file_scale == 100.0: self.cb_probe_scale.setCurrentText("x100")
+                elif file_scale == 10.0: self.cb_probe_scale.setCurrentText("x10")
                 else: self.cb_probe_scale.setCurrentText("x1")
                 self.cb_probe_scale.blockSignals(False)
                 
@@ -1680,42 +1706,101 @@ class AuraScope(QMainWindow):
                 self.process_and_plot(v1_base, v2_base, fs)
                 self.setWindowTitle(f"AuraScope Viewer - [Loaded: {path}]")
                 QMessageBox.information(self, "导入成功", 
-                    f"已加载 {len(v1_base)} 点数据\\n采样率: {fs} Hz\\n探头倍率: x{int(file_scale)}")
+                    f"已加载 {len(v1_base)} 点数据\n采样率: {fs} Hz\n探头倍率: x{int(file_scale)}")
 
         except Exception as e:
             QMessageBox.critical(self, "导入错误", str(e))
 
     def show_help(self):
-        help_text = """
-        <h3 style='color:#4db6ac'>AuraScope 功能说明</h3>
-        <p><b>1. 连接设置</b>: 选择串口并点击“打开串口”以连接设备。R 按钮用于刷新串口列表。</p>
-        <p><b>2. 采集模式</b>: 
-           <ul>
-           <li><b>单包/双包</b>: 适合触发观测，波形稳定。</li>
-           <li><b>滚动模式</b>: 适合观察低频或变化信号。</li>
-           <li><b>50x 探头衰减</b>: 使用高压探头时勾选，量程扩大至 ±300V。</li>
-           </ul>
-        </p>
-        <p><b>3. 软件触发</b>: 启用后，波形将在设定的电平处稳定显示（仅限单/双包模式）。</p>
-        <p><b>4. 通道管理</b>: 开启/关闭通道显示。勾选光标可进行时间和电压测量。</p>
-        <p><b>5. 算法与 FFT</b>:
-           <ul>
-           <li><b>频率检测</b>: 施密特触发器适合干净波形，自相关适合噪声波形。</li>
-           <li><b>FFT</b>: 切换线性或对数坐标显示频域。</li>
-           <li><b>相位</b>: XCorr 适合同频信号，FFT 适合复杂信号。</li>
-           </ul>
-        </p>
-        <p><b>6. 视图优化</b>:
-           <ul>
-           <li><b>Auto Range</b>: 自动调整坐标轴范围。</li>
-           <li><b>锁轴</b>: 防止坐标轴自动缩放。</li>
-           <li><b>Vpp 过滤</b>: 滤除异常的尖峰脉冲。</li>
-           <li><b>波形平滑</b>: 简单的 3 点平均平滑。</li>
-           </ul>
-        </p>
-        <p><b>7. 操作</b>: 暂停波形刷新，导出/导入 CSV 数据以供分析。</p>
+        from PySide6.QtWidgets import QDialog, QTextBrowser, QDialogButtonBox
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("AuraScope 使用说明")
+        dialog.resize(700, 500)
+        dialog.setStyleSheet("QDialog { background-color: #1e1e1e; }")
+        
+        layout = QVBoxLayout(dialog)
+        
+        browser = QTextBrowser()
+        browser.setStyleSheet("border: none; background-color: #1e1e1e; color: #e0e0e0;")
+        
+        help_content = """
+        <style>
+            h3 { color: #4db6ac; margin-bottom: 10px; border-bottom: 1px solid #3d3d3d; padding-bottom: 5px; }
+            h4 { color: #4db6ac; margin-top: 20px; margin-bottom: 8px; font-size: 11pt; font-weight: bold; }
+            p, li { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; font-size: 10pt; line-height: 1.6; color: #d0d0d0; }
+            ul { margin-top: 5px; margin-bottom: 5px; padding-left: 25px; }
+            li { margin-bottom: 4px; }
+            .highlight { color: #80cbc4; font-weight: bold; }
+        </style>
+        
+        <h3>AuraScope 虚拟示波器帮助手册</h3>
+
+        <h4>1. 快速入门</h4>
+        <ul>
+        <li><b>连接设备</b>: 插入 USB，点击刷新按钮 (R)，选择 COM 口后点击“打开串口”。</li>
+        <li><b>基本控制</b>: 使用 <span class="highlight">Run/Stop</span> 暂停波形以便细致观察和缩放。</li>
+        </ul>
+
+        <h4>2. 采集与显示</h4>
+        <ul>
+        <li><b>采集模式</b>: 
+            <ul>
+            <li><b>单包/双包</b>: 适合触发观测，波形刷新稳定，适合周期信号。</li>
+            <li><b>滚动模式</b>: 类似图表记录仪，适合观察低频或缓慢变化的信号。</li>
+            <li><b>按时间采集</b>: 采集指定时间长度的信号，适合分析长时信号。</li>
+            </ul>
+        </li>
+        <li><b>探头设置</b>: 若使用 10x/100x 高压探头，请在下拉框选择对应衰减比，以显示真实电压值。</li>
+        <li><b>视图控制</b>: 
+            <ul>
+            <li><b>Auto Range</b>: 自动调整纵轴范围以适应波形幅度。</li>
+            <li><b>锁轴</b>: 锁定当前坐标轴范围，防止自动缩放干扰观察。</li>
+            </ul>
+        </li>
+        </ul>
+
+        <h4>3. 高级分析</h4>
+        <ul>
+        <li><b>软件触发</b>: 启用后，波形将在穿越设定电平(Trigger Level)时稳定显示（仅限非滚动模式）。</li>
+        <li><b>频率测量</b>: 点击 施密特/自相关 测频按钮，可切换不同的频率计算算法，显示当前信号的频率（Hz）。</li>
+        <li><b>相位测量</b>: 点击 XCorr/FFT 相位测量按钮，可切换不同的相位差计算算法，显示 CH1 & CH2 信号的相位差。</li>
+        <li><b>光标测量</b>: 勾选“启用光标”，拖动图表中的水平/垂直线，可精确测量 <b>Δt (时间差/频率)</b> 和 <b>ΔV (电压差)</b>。</li>
+        <li><b>频域分析 (FFT)</b>: 点击 线性坐标/对数坐标 按钮切换至频谱视图，支持线性/对数显示，用于观察信号的频率成分。</li>
+        </ul>
+
+        <h4>4. 数据处理</h4>
+        <ul>
+        <li><b>CSV 导入/导出</b>: 支持保存当前波形数据到 CSV 文件，或回放历史数据进行离线分析。</li>
+        <li><b>平滑滤波</b>: 开启后对波形进行 3 点移动平均，减少高频噪声干扰。</li>
+        </ul>
+
+        <h4>5. 信号校准</h4>
+        <ul>
+        <li><b>零点校准 (Auto Zero)</b>: 将探头接地 (GND)，点击“自动归零”，消除直流偏置误差。</li>
+        <li><b>增益校准 (Auto Gain)</b>: 将探头接至已知参考电压源（如 3.3V），输入参考电压值后点击“自动增益”，修正幅度误差。</li>
+        <li><b>手动微调</b>: 可手动调整 Offset (偏移) 和 Gain (增益) 参数以达到最佳精度。</li>
+        <li><b>保存配置</b>: 点击“保存校准配置”将当前参数写入配置文件，下次启动自动加载。</li>
+        </ul>
         """
-        QMessageBox.about(self, "帮助与说明", help_text)
+        browser.setHtml(help_content)
+        layout.addWidget(browser)
+        
+        btn_box = QDialogButtonBox(QDialogButtonBox.Ok)
+        btn_box.accepted.connect(dialog.accept)
+        btn_box.setStyleSheet("""
+            QPushButton {
+                background-color: #3c3c3c;
+                border: 1px solid #555;
+                border-radius: 4px;
+                padding: 6px 20px;
+                color: #ffffff;
+            }
+            QPushButton:hover { background-color: #505050; border-color: #4db6ac; }
+        """)
+        layout.addWidget(btn_box)
+        
+        dialog.exec()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
