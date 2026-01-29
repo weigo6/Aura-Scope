@@ -2,6 +2,7 @@ import sys
 import os
 import csv
 import datetime
+import json
 import numpy as np
 import serial
 import serial.tools.list_ports
@@ -9,7 +10,7 @@ import struct
 from collections import deque
 
 # 核心 UI 库导入
-from PySide6.QtCore import Qt, QThread, Signal, Slot, QPointF
+from PySide6.QtCore import Qt, QThread, Signal, Slot, QPointF, QTimer
 from PySide6.QtGui import QColor, QPalette, QIcon, QPixmap, QPainter
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QComboBox, QPushButton, QLabel, 
@@ -495,6 +496,21 @@ class AuraScope(QMainWindow):
 
         self.is_connected = False
         
+        # 校准相关变量
+        self.cal_data = {}  # 存储所有档位的校准数据
+        self.current_scale_key = "x1"
+        self.ch1_offset = 0.0
+        self.ch1_gain = 1.0
+        self.ch2_offset = 0.0
+        self.ch2_gain = 1.0
+        self.is_calibrating = False
+        self.is_calibrating_gain = False
+        self.cal_active_ch1 = True
+        self.cal_active_ch2 = True
+        self.cal_samples_ch1 = []
+        self.cal_samples_ch2 = []
+        self.load_config()
+        
         # 光标相关
         self.cursor_t1 = None
         self.cursor_t2 = None
@@ -578,11 +594,16 @@ class AuraScope(QMainWindow):
         
         self.container_time_mode.setVisible(False)
 
-        self.chk_atten = QCheckBox("50x 探头衰减 (±300V)")
-        self.chk_atten.toggled.connect(self.update_trigger_range)
+        h_scale = QHBoxLayout()
+        h_scale.addWidget(QLabel("探头倍率:"))
+        self.cb_probe_scale = QComboBox()
+        self.cb_probe_scale.addItems(["x1", "x50", "x100"])
+        self.cb_probe_scale.currentTextChanged.connect(self.on_scale_changed)
+        h_scale.addWidget(self.cb_probe_scale)
+
         l_mode.addWidget(self.cb_display_mode)
         l_mode.addWidget(self.container_time_mode)
-        l_mode.addWidget(self.chk_atten)
+        l_mode.addLayout(h_scale)
         gp_mode.setLayout(l_mode)
         scroll_layout.addWidget(gp_mode)
 
@@ -730,6 +751,85 @@ class AuraScope(QMainWindow):
         gp_act.setLayout(l_act)
         scroll_layout.addWidget(gp_act)
 
+        # 8. 信号校准
+        gp_cal = QGroupBox("8. 信号校准")
+        l_cal = QVBoxLayout()
+        
+        # CH1 校准
+        h_cal1 = QHBoxLayout()
+        self.spin_ch1_off = QDoubleSpinBox()
+        self.spin_ch1_off.setRange(-5.0, 5.0)
+        self.spin_ch1_off.setSingleStep(0.001)
+        self.spin_ch1_off.setDecimals(3)
+        self.spin_ch1_off.setValue(self.ch1_offset)
+        self.spin_ch1_off.setPrefix("C1 Off: ")
+        self.spin_ch1_off.setSuffix(" V")
+        self.spin_ch1_off.valueChanged.connect(self.on_cal_params_changed)
+        
+        self.spin_ch1_gain = QDoubleSpinBox()
+        self.spin_ch1_gain.setRange(0.5, 2.0)
+        self.spin_ch1_gain.setSingleStep(0.01)
+        self.spin_ch1_gain.setValue(self.ch1_gain)
+        self.spin_ch1_gain.setPrefix("Gain: ")
+        self.spin_ch1_gain.valueChanged.connect(self.on_cal_params_changed)
+        
+        h_cal1.addWidget(self.spin_ch1_off)
+        h_cal1.addWidget(self.spin_ch1_gain)
+        l_cal.addLayout(h_cal1)
+        
+        # CH2 校准
+        h_cal2 = QHBoxLayout()
+        self.spin_ch2_off = QDoubleSpinBox()
+        self.spin_ch2_off.setRange(-5.0, 5.0)
+        self.spin_ch2_off.setSingleStep(0.001)
+        self.spin_ch2_off.setDecimals(3)
+        self.spin_ch2_off.setValue(self.ch2_offset)
+        self.spin_ch2_off.setPrefix("C2 Off: ")
+        self.spin_ch2_off.setSuffix(" V")
+        self.spin_ch2_off.valueChanged.connect(self.on_cal_params_changed)
+        
+        self.spin_ch2_gain = QDoubleSpinBox()
+        self.spin_ch2_gain.setRange(0.5, 2.0)
+        self.spin_ch2_gain.setSingleStep(0.01)
+        self.spin_ch2_gain.setValue(self.ch2_gain)
+        self.spin_ch2_gain.setPrefix("Gain: ")
+        self.spin_ch2_gain.valueChanged.connect(self.on_cal_params_changed)
+        
+        h_cal2.addWidget(self.spin_ch2_off)
+        h_cal2.addWidget(self.spin_ch2_gain)
+        l_cal.addLayout(h_cal2)
+        
+        self.btn_auto_zero = QPushButton("自动归零 (Auto Zero)")
+        self.btn_auto_zero.clicked.connect(self.on_auto_zero_clicked)
+        self.btn_auto_zero.setStyleSheet("background-color: #5d4037;")
+        l_cal.addWidget(self.btn_auto_zero)
+
+        # 增益校准 UI
+        h_gain_cal = QHBoxLayout()
+        self.spin_ref_vpp = QDoubleSpinBox()
+        self.spin_ref_vpp.setRange(0.1, 400.0)
+        self.spin_ref_vpp.setValue(3.3)
+        self.spin_ref_vpp.setDecimals(3)
+        self.spin_ref_vpp.setPrefix("Ref: ")
+        self.spin_ref_vpp.setSuffix(" V")
+        self.spin_ref_vpp.setToolTip("输入参考电压源的实际精确值")
+        self.spin_ref_vpp.setFocusPolicy(Qt.ClickFocus) # 防止自动聚焦导致的高亮
+        
+        self.btn_auto_gain = QPushButton("自动增益 (Auto Gain)")
+        self.btn_auto_gain.clicked.connect(self.on_auto_gain_clicked)
+        self.btn_auto_gain.setStyleSheet("background-color: #455a64;")
+        
+        h_gain_cal.addWidget(self.spin_ref_vpp)
+        h_gain_cal.addWidget(self.btn_auto_gain)
+        l_cal.addLayout(h_gain_cal)
+        
+        self.btn_save_cal = QPushButton("保存校准配置")
+        self.btn_save_cal.clicked.connect(self.save_config)
+        l_cal.addWidget(self.btn_save_cal)
+        
+        gp_cal.setLayout(l_cal)
+        scroll_layout.addWidget(gp_cal)
+
         # 填充底部空白
         scroll_layout.addStretch()
         scroll_area.setWidget(scroll_content)
@@ -822,6 +922,89 @@ class AuraScope(QMainWindow):
         self.h_line1.sigPositionChanged.connect(self.update_cursor_readout)
         self.h_line2.sigPositionChanged.connect(self.update_cursor_readout)
 
+    def load_config(self):
+        path = os.path.join(os.path.dirname(__file__), "calibration.json")
+        if os.path.exists(path):
+            try:
+                with open(path, 'r') as f:
+                    data = json.load(f)
+                    # 兼容旧版本配置 (Flat structure -> Nested)
+                    if "ch1_offset" in data:
+                        self.cal_data = {"x1": data, "x50": {}, "x100": {}}
+                    else:
+                        self.cal_data = data
+            except Exception as e:
+                print(f"Load config error: {e}")
+        
+        # 确保当前档位有数据
+        key = self.current_scale_key
+        if key not in self.cal_data:
+            self.cal_data[key] = {}
+            
+        params = self.cal_data[key]
+        self.ch1_offset = params.get("ch1_offset", 0.0)
+        self.ch1_gain = params.get("ch1_gain", 1.0)
+        self.ch2_offset = params.get("ch2_offset", 0.0)
+        self.ch2_gain = params.get("ch2_gain", 1.0)
+
+    def save_config(self):
+        # 保存当前档位参数到内存字典
+        self.cal_data[self.current_scale_key] = {
+            "ch1_offset": self.ch1_offset,
+            "ch1_gain": self.ch1_gain,
+            "ch2_offset": self.ch2_offset,
+            "ch2_gain": self.ch2_gain
+        }
+        
+        path = os.path.join(os.path.dirname(__file__), "calibration.json")
+        try:
+            with open(path, 'w') as f:
+                json.dump(self.cal_data, f, indent=4)
+            QMessageBox.information(self, "保存成功", f"当前档位 ({self.current_scale_key}) 的校准参数已保存。")
+        except Exception as e:
+            QMessageBox.critical(self, "保存失败", str(e))
+
+    def on_scale_changed(self, new_text):
+        # 1. 保存旧档位参数 (只更新内存，不写文件，避免频繁IO)
+        self.cal_data[self.current_scale_key] = {
+            "ch1_offset": self.ch1_offset,
+            "ch1_gain": self.ch1_gain,
+            "ch2_offset": self.ch2_offset,
+            "ch2_gain": self.ch2_gain
+        }
+        
+        # 2. 切换到新档位
+        self.current_scale_key = new_text
+        
+        # 3. 加载新档位参数
+        if new_text not in self.cal_data:
+            self.cal_data[new_text] = {}
+        
+        params = self.cal_data[new_text]
+        self.ch1_offset = params.get("ch1_offset", 0.0)
+        self.ch1_gain = params.get("ch1_gain", 1.0)
+        self.ch2_offset = params.get("ch2_offset", 0.0)
+        self.ch2_gain = params.get("ch2_gain", 1.0)
+        
+        # 4. 更新 UI (阻断信号防止递归调用处理)
+        self.spin_ch1_off.blockSignals(True)
+        self.spin_ch1_gain.blockSignals(True)
+        self.spin_ch2_off.blockSignals(True)
+        self.spin_ch2_gain.blockSignals(True)
+        
+        self.spin_ch1_off.setValue(self.ch1_offset)
+        self.spin_ch1_gain.setValue(self.ch1_gain)
+        self.spin_ch2_off.setValue(self.ch2_offset)
+        self.spin_ch2_gain.setValue(self.ch2_gain)
+        
+        self.spin_ch1_off.blockSignals(False)
+        self.spin_ch1_gain.blockSignals(False)
+        self.spin_ch2_off.blockSignals(False)
+        self.spin_ch2_gain.blockSignals(False)
+        
+        # 5. 更新触发电平和视图
+        self.update_trigger_range()
+
     def refresh_ports(self):
         current = self.cb_port.currentText()
         self.cb_port.clear()
@@ -834,7 +1017,12 @@ class AuraScope(QMainWindow):
         self.reprocess_view()
 
     def on_trigger_slider_move(self, value):
-        scale = 50 if self.chk_atten.isChecked() else 1
+        try:
+            scale_str = self.cb_probe_scale.currentText()
+            scale = float(scale_str[1:])
+        except:
+            scale = 1.0
+            
         real_volts = (value / 100.0) * scale
         self.lbl_trig.setText(f"电平: {real_volts:.2f} V")
         self.trig_line.setValue(real_volts)
@@ -900,6 +1088,73 @@ class AuraScope(QMainWindow):
     def on_smooth_toggled(self, checked):
         self.enable_smooth = checked
         self.reprocess_view()
+
+    def on_cal_params_changed(self):
+        self.ch1_offset = self.spin_ch1_off.value()
+        self.ch1_gain = self.spin_ch1_gain.value()
+        self.ch2_offset = self.spin_ch2_off.value()
+        self.ch2_gain = self.spin_ch2_gain.value()
+        self.reprocess_view()
+
+    def on_auto_zero_clicked(self):
+        self.btn_auto_zero.clearFocus() # 清除焦点避免弹窗时其他控件被选中
+        if not self.is_connected:
+            QMessageBox.warning(self, "自动归零", "请先连接设备并开启数据采集。")
+            return
+        
+        self.cal_active_ch1 = self.chk_show_ch1.isChecked()
+        self.cal_active_ch2 = self.chk_show_ch2.isChecked()
+        
+        if not (self.cal_active_ch1 or self.cal_active_ch2):
+            QMessageBox.warning(self, "自动归零", "请至少开启一个要校准的通道 (CH1/CH2)。")
+            return
+
+        target_str = "、".join([c for c, a in zip(["CH1", "CH2"], [self.cal_active_ch1, self.cal_active_ch2]) if a])
+        
+        reply = QMessageBox.question(self, "自动归零", 
+            f"准备开始自动归零校准 [{target_str}]：\n"
+            f"1. 请确保所选探头已接地(GND)\n"
+            f"2. 过程中请保持信号稳定\n\n"
+            f"是否开始？",
+            QMessageBox.Yes | QMessageBox.No)
+        
+        if reply == QMessageBox.Yes:
+            self.cal_samples_ch1.clear()
+            self.cal_samples_ch2.clear()
+            self.is_calibrating = True
+            self.btn_auto_zero.setText("校准中 (Sampling...)")
+            self.btn_auto_zero.setEnabled(False)
+
+    def on_auto_gain_clicked(self):
+        self.btn_auto_gain.clearFocus() # 清除焦点避免弹窗时其他控件被选中
+        if not self.is_connected:
+            QMessageBox.warning(self, "自动增益", "请先连接设备并开启数据采集。")
+            return
+        
+        self.cal_active_ch1 = self.chk_show_ch1.isChecked()
+        self.cal_active_ch2 = self.chk_show_ch2.isChecked()
+        
+        if not (self.cal_active_ch1 or self.cal_active_ch2):
+            QMessageBox.warning(self, "自动增益", "请至少开启一个要校准的通道 (CH1/CH2)。")
+            return
+
+        target_str = "、".join([c for c, a in zip(["CH1", "CH2"], [self.cal_active_ch1, self.cal_active_ch2]) if a])
+        ref_v = self.spin_ref_vpp.value()
+        
+        reply = QMessageBox.question(self, "自动增益校准", 
+            f"准备开始自动增益校准 [{target_str}]：\n"
+            f"1. 请确保所选探头已连接到 {ref_v:.3f}V 参考电压源\n"
+            f"2. 请确保已完成“自动归零”校准\n"
+            f"3. 过程中请保持信号稳定\n\n"
+            f"是否开始？",
+            QMessageBox.Yes | QMessageBox.No)
+        
+        if reply == QMessageBox.Yes:
+            self.cal_samples_ch1.clear()
+            self.cal_samples_ch2.clear()
+            self.is_calibrating_gain = True
+            self.btn_auto_gain.setText("校准中 (Sampling...)")
+            self.btn_auto_gain.setEnabled(False)
         
     def on_cursors_x_toggled(self, checked):
         if checked:
@@ -952,6 +1207,7 @@ class AuraScope(QMainWindow):
 
     def reprocess_view(self, _=None):
         if self.paused and self.last_view_ch1 is not None:
+            # 确保即使在暂停状态下应用了新 Gain/Offset，重新绘图也能反映出来
             self.process_and_plot(self.last_view_ch1, self.last_view_ch2, self.last_fs)
 
     def on_pause_toggled(self, checked):
@@ -996,7 +1252,113 @@ class AuraScope(QMainWindow):
         # v1 = 5.0 - 2.0 * (adc / 4095 * 3.3)
         v1_base = (5.0 - 2.0 * (ch1_raw / 4095.0 * 3.3))
         v2_base = (5.0 - 2.0 * (ch2_raw / 4095.0 * 3.3))
-        
+
+        # 应用校准系数
+        v1_base = v1_base * self.ch1_gain + self.ch1_offset
+        v2_base = v2_base * self.ch2_gain + self.ch2_offset
+
+        # 自动校准逻辑 (Auto Zero)
+        if self.is_calibrating:
+            vpp1 = np.ptp(v1_base)
+            vpp2 = np.ptp(v2_base)
+            
+            # 过滤异常包 (校准时要求信号稳定，且不触发 Vpp 过滤)
+            is_valid = True
+            if self.enable_vpp_filter:
+                try:
+                    is_atten = float(self.cb_probe_scale.currentText()[1:]) >= 50
+                except: is_atten = False
+                v_range = self.atten_volt_range if is_atten else self.normal_volt_range
+                max_vpp = (v_range[1] - v_range[0]) * 1.2
+                if vpp1 > max_vpp or vpp2 > max_vpp:
+                    is_valid = False
+            
+            if is_valid:
+                if self.cal_active_ch1: self.cal_samples_ch1.append(np.mean(v1_base))
+                if self.cal_active_ch2: self.cal_samples_ch2.append(np.mean(v2_base))
+                
+                # 以样本数最多的为准（通常同步）
+                count = max(len(self.cal_samples_ch1), len(self.cal_samples_ch2))
+                if count >= 20: 
+                    diff1, diff2 = 0, 0
+                    msg_details = ""
+                    
+                    if self.cal_active_ch1 and self.cal_samples_ch1:
+                        diff1 = np.mean(self.cal_samples_ch1)
+                        self.ch1_offset -= diff1
+                        v1_base -= diff1
+                        msg_details += f"CH1 修正: {-diff1*1000:.1f} mV\n"
+                        
+                    if self.cal_active_ch2 and self.cal_samples_ch2:
+                        diff2 = np.mean(self.cal_samples_ch2)
+                        self.ch2_offset -= diff2
+                        v2_base -= diff2
+                        msg_details += f"CH2 修正: {-diff2*1000:.1f} mV\n"
+                    
+                    self.is_calibrating = False
+                    
+                    # 更新 UI
+                    self.spin_ch1_off.blockSignals(True)
+                    self.spin_ch2_off.blockSignals(True)
+                    self.spin_ch1_off.setValue(self.ch1_offset)
+                    self.spin_ch2_off.setValue(self.ch2_offset)
+                    self.spin_ch1_off.blockSignals(False)
+                    self.spin_ch2_off.blockSignals(False)
+
+                    self.btn_auto_zero.setText("自动归零 (Auto Zero)")
+                    self.btn_auto_zero.setEnabled(True)
+                    self.save_config()
+                    
+                    msg = (f"已完成 {self.current_scale_key} 档位归零校准\n\n"
+                           f"{msg_details}"
+                           f"当前 Offset: C1={self.ch1_offset:.3f}V, C2={self.ch2_offset:.3f}V")
+                    QTimer.singleShot(50, lambda: QMessageBox.information(self, "自动归零完成", msg))
+
+        # 自动增益校准逻辑 (Auto Gain)
+        if self.is_calibrating_gain:
+            if self.cal_active_ch1: self.cal_samples_ch1.append(np.mean(v1_base))
+            if self.cal_active_ch2: self.cal_samples_ch2.append(np.mean(v2_base))
+            
+            count = max(len(self.cal_samples_ch1), len(self.cal_samples_ch2))
+            if count >= 20:
+                target_v = self.spin_ref_vpp.value()
+                try:
+                    scale = float(self.cb_probe_scale.currentText()[1:])
+                except: scale = 1.0
+                
+                msg_details = f"参考电压: {target_v:.3f} V\n"
+                
+                if self.cal_active_ch1 and self.cal_samples_ch1:
+                    measured1 = np.mean(self.cal_samples_ch1)
+                    if abs(measured1) > 0.01:
+                        ratio1 = target_v / (measured1 * scale)
+                        self.ch1_gain *= ratio1
+                        msg_details += f"CH1 实测: {measured1*scale:.3f}V -> 新 Gain: {self.ch1_gain:.3f}\n"
+                
+                if self.cal_active_ch2 and self.cal_samples_ch2:
+                    measured2 = np.mean(self.cal_samples_ch2)
+                    if abs(measured2) > 0.01:
+                        ratio2 = target_v / (measured2 * scale)
+                        self.ch2_gain *= ratio2
+                        msg_details += f"CH2 实测: {measured2*scale:.3f}V -> 新 Gain: {self.ch2_gain:.3f}\n"
+                
+                self.is_calibrating_gain = False
+                
+                # 更新 UI
+                self.spin_ch1_gain.blockSignals(True)
+                self.spin_ch2_gain.blockSignals(True)
+                self.spin_ch1_gain.setValue(self.ch1_gain)
+                self.spin_ch2_gain.setValue(self.ch2_gain)
+                self.spin_ch1_gain.blockSignals(False)
+                self.spin_ch2_gain.blockSignals(False)
+                
+                self.btn_auto_gain.setText("自动增益 (Auto Gain)")
+                self.btn_auto_gain.setEnabled(True)
+                self.save_config()
+                
+                msg = f"已完成 {self.current_scale_key} 档位增益校准\n\n{msg_details}"
+                QTimer.singleShot(50, lambda: QMessageBox.information(self, "增益校准完成", msg))
+
         mode = self.cb_display_mode.currentIndex()
         f1, f2 = None, None
 
@@ -1016,7 +1378,10 @@ class AuraScope(QMainWindow):
         elif mode == 3:
             # 异常包过滤 (Vpp Check)
             if self.enable_vpp_filter:
-                v_range = self.atten_volt_range if self.chk_atten.isChecked() else self.normal_volt_range
+                try:
+                    is_atten = float(self.cb_probe_scale.currentText()[1:]) >= 50
+                except: is_atten = False
+                v_range = self.atten_volt_range if is_atten else self.normal_volt_range
                 max_vpp = (v_range[1] - v_range[0]) * 1.2
                 if np.ptp(v1_base) > max_vpp or np.ptp(v2_base) > max_vpp:
                     return
@@ -1049,8 +1414,13 @@ class AuraScope(QMainWindow):
         self.last_view_ch2 = v2_base
         self.last_fs = fs
 
-        is_atten = self.chk_atten.isChecked()
-        scale = 50.0 if is_atten else 1.0
+        try:
+            scale_str = self.cb_probe_scale.currentText()
+            scale = float(scale_str[1:])
+        except:
+            scale = 1.0
+            
+        is_atten = scale >= 50
         v1_p = v1_base * scale
         v2_p = v2_base * scale
 
@@ -1210,8 +1580,9 @@ class AuraScope(QMainWindow):
             return
 
         try:
-            is_atten = self.chk_atten.isChecked()
-            scale = 50.0 if is_atten else 1.0
+            scale_str = self.cb_probe_scale.currentText()
+            try: scale = float(scale_str[1:])
+            except: scale = 1.0
 
             with open(path, 'w', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
@@ -1219,7 +1590,7 @@ class AuraScope(QMainWindow):
                 writer.writerow([f"# AuraScope Data Export"])
                 writer.writerow([f"# Date: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"])
                 writer.writerow([f"# SampleRate: {self.last_fs}"])
-                writer.writerow([f"# Attenuation: {'50x' if is_atten else '1x'}"])
+                writer.writerow([f"# Attenuation: {scale_str}"])
                 writer.writerow(["Time_s", "CH1_V", "CH2_V"])
                 
                 # 写入数据 (保存缩放后的真实电压值)
@@ -1297,16 +1668,19 @@ class AuraScope(QMainWindow):
                 v2_base = data_np[:, 1] / file_scale
                 
                 # 自动同步 UI 状态
-                self.chk_atten.blockSignals(True)
-                self.chk_atten.setChecked(file_scale == 50.0)
-                self.chk_atten.blockSignals(False)
+                self.cb_probe_scale.blockSignals(True)
+                if file_scale == 50.0: self.cb_probe_scale.setCurrentText("x50")
+                elif file_scale == 100.0: self.cb_probe_scale.setCurrentText("x100")
+                else: self.cb_probe_scale.setCurrentText("x1")
+                self.cb_probe_scale.blockSignals(False)
+                
                 # 更新触发线等 UI 元素 (手动触发一次不带 reprocess_view 的 UI 更新)
                 self.on_trigger_slider_move(self.sl_trig.value())
                 
                 self.process_and_plot(v1_base, v2_base, fs)
                 self.setWindowTitle(f"AuraScope Viewer - [Loaded: {path}]")
                 QMessageBox.information(self, "导入成功", 
-                    f"已加载 {len(v1_base)} 点数据\\n采样率: {fs} Hz\\n衰减模式: {'50x' if file_scale==50 else '1x'}")
+                    f"已加载 {len(v1_base)} 点数据\\n采样率: {fs} Hz\\n探头倍率: x{int(file_scale)}")
 
         except Exception as e:
             QMessageBox.critical(self, "导入错误", str(e))

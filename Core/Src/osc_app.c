@@ -93,6 +93,14 @@ void OSC_Init(void) {
 }
 
 void OSC_Start(void) {
+    // 启动前先进行校准，确保测量精度
+    if (HAL_ADCEx_Calibration_Start(&hadc1) != HAL_OK) {
+        Error_Handler();
+    }
+    if (HAL_ADCEx_Calibration_Start(&hadc2) != HAL_OK) {
+        Error_Handler();
+    }
+
     // 启动ADC DMA (双重模式)
     if (HAL_ADC_Start(&hadc2) != HAL_OK) {
         Error_Handler();
