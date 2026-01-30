@@ -245,11 +245,14 @@ void UI_DrawOscilloscope(void)
     }
 
     if (ui_full_redraw || atten != last_atten_top) {
-        if (atten == 50) {
-            ST7735_DrawString(88, 2, "x50", ST7735_RED, ST7735_BLACK);
-        } else {
-            ST7735_DrawString(88, 2, "x1 ", ST7735_GREEN, ST7735_BLACK);
-        }
+        char buf[8];
+        snprintf(buf, sizeof(buf), "x%-3d", atten); // Ensure overwrite with spaces
+        
+        uint16_t color = ST7735_GREEN;
+        if (atten >= 50) color = ST7735_RED;
+        else if (atten >= 10) color = ST7735_YELLOW;
+
+        ST7735_DrawString(88, 2, buf, color, ST7735_BLACK);
         last_atten_top = atten;
     }
 
@@ -307,11 +310,11 @@ void UI_DrawOscilloscope(void)
         else if (osc_mode == OSC_MODE_CH2) {
             // 清除左侧可能存在的旧 CH1 (使用空格覆盖)
             ST7735_DrawString(0, 112, "           ", ST7735_WHITE, ST7735_BLACK);
-            ST7735_DrawString(85, 112, pad2, ST7735_CYAN, ST7735_BLACK);
+            ST7735_DrawString(85, 112, pad2, ST7735_YELLOW, ST7735_BLACK);
         }
         else {
             ST7735_DrawString(0, 112, pad1, ST7735_GREEN, ST7735_BLACK);
-            ST7735_DrawString(85, 112, pad2, ST7735_CYAN, ST7735_BLACK);
+            ST7735_DrawString(85, 112, pad2, ST7735_YELLOW, ST7735_BLACK);
         }
 
         // 更新缓存

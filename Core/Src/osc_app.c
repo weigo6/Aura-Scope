@@ -15,7 +15,8 @@ volatile uint8_t osc_adc_half_cplt_flag = 0; // 新增半传输标志
 
 static OscState_t osc_state = OSC_RUN;
 static OscMode_t osc_mode = OSC_MODE_CH1;
-static uint8_t attenuation_x50 = 0; // 0: x1, 1: x50
+static uint8_t attenuation_idx = 0; // 0: x1, 1: x10, 2: x50, 3: x100
+static const uint8_t attenuation_values[] = {1, 10, 50, 100};
 static uint8_t cdc_enabled = 0;
 
 // 底部信息显示模式 (0: Vpp, 1: Freq)
@@ -223,7 +224,7 @@ void OSC_Process(void) {
         }
         
         // 最终转换 Vpp
-        float factor = attenuation_x50 ? 100.0f : 2.0f;
+        float factor = 2.0f * attenuation_values[attenuation_idx];
         float conv = 3.3f / 4095.0f * factor;
         vpp_ch1 = (max1 - min1) * conv;
         vpp_ch2 = (max2 - min2) * conv;
@@ -340,7 +341,7 @@ void OSC_TogglePause(void) {
 }
 
 void OSC_ToggleAttenuation(void) {
-    attenuation_x50 = !attenuation_x50;
+    attenuation_idx = (attenuation_idx + 1) % 4;
 }
 
 void OSC_CycleChannelMode(void) {
@@ -378,7 +379,7 @@ OscMode_t OSC_GetChannelMode(void) {
 }
 
 uint8_t OSC_GetAttenuation(void) {
-    return attenuation_x50 ? 50 : 1;
+    return attenuation_values[attenuation_idx];
 }
 
 uint8_t OSC_GetInfoMode(void) {
