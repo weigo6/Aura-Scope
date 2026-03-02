@@ -306,7 +306,9 @@ void ST7735_Init(void)
     
     // 内存访问控制
     ST7735_WriteCommand(ST7735_MADCTL);
-    ST7735_WriteData(0x60);  // 翻转180度横屏: 0x60 (MY=0, MX=1, MV=1, ML=0, RGB=0)
+    ST7735_WriteData(0x60);
+    // 原始设置: 0x60 (MY=0, MX=1, MV=1, ML=0, RGB=0)
+    // 翻转180度: 0xA0 (MY=1, MX=0, MV=1, ML=0, RGB=0)
     
     // 像素格式：16 位 RGB565
     ST7735_WriteCommand(ST7735_COLMOD);
