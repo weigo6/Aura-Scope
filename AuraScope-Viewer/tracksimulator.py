@@ -69,7 +69,7 @@ class SignalSimulator:
         return t, signal, mod_signal
 
     @staticmethod
-    def generate_25hz_phase(freq=25.0, phase_diff=90.0, duration=1.0, fs=200000, amp1=110.0, amp2=110.0, 
+    def generate_25hz_phase(freq=25.0, phase_diff=90.0, duration=1.0, fs=200000, amp1=110.0, amp2=18.0, 
                             noise_std1=0.0, interference_50hz1=0.0,
                             noise_std2=0.0, interference_50hz2=0.0):
         """
@@ -80,12 +80,12 @@ class SignalSimulator:
         phase_diff : 相位差 (度), CH2 滞后于 CH1 的角度
         duration : 信号时长 (s)
         fs : 采样率 (Hz)
-        amp1 : CH1 幅值 (V) - 局部电压
-        amp2 : CH2 幅值 (V) - 轨道电压
+        amp1 : CH1 幅值 (V) - 局部电压 (有效值 RMS)
+        amp2 : CH2 幅值 (V) - 轨道电压 (有效值 RMS)
         noise_std1 : CH1 高斯噪声标准差 (V)
-        interference_50hz1 : CH1 50Hz 工频干扰幅值 (V)
+        interference_50hz1 : CH1 50Hz 工频干扰幅值 (V, 有效值)
         noise_std2 : CH2 高斯噪声标准差 (V)
-        interference_50hz2 : CH2 50Hz 工频干扰幅值 (V)
+        interference_50hz2 : CH2 50Hz 工频干扰幅值 (V, 有效值)
         
         返回:
         t : 时间轴数组
@@ -94,23 +94,27 @@ class SignalSimulator:
         """
         t = np.linspace(0, duration, int(fs * duration), endpoint=False)
         
-        # CH1: 参考信号 (局部电压)
-        sig1 = amp1 * np.sin(2 * np.pi * freq * t)
+        # CH1: 参考信号 (局部电压), 有效值转峰值
+        sig1 = amp1 * np.sqrt(2) * np.sin(2 * np.pi * freq * t)
         
-        # CH2: 轨道信号 (带相位差)
-        # phase_diff is in degrees
+        # CH2: 轨道信号 (带相位差), 有效值转峰值
+        # 物理现实中, 局部电压超前轨道电压, 即 CH2 滞后 CH1, 故为减号
         phi = np.deg2rad(phase_diff)
-        sig2 = amp2 * np.sin(2 * np.pi * freq * t + phi)
+        sig2 = amp2 * np.sqrt(2) * np.sin(2 * np.pi * freq * t - phi)
         
+        # 生成随机的 50Hz 干扰初相 (模拟牵引电流随机相位)
+        phase_50hz_1 = np.random.uniform(0, 2 * np.pi)
+        phase_50hz_2 = np.random.uniform(0, 2 * np.pi)
+
         # CH1 干扰
         if interference_50hz1 > 0:
-            sig1 += interference_50hz1 * np.sin(2 * np.pi * 50 * t)
+            sig1 += interference_50hz1 * np.sqrt(2) * np.sin(2 * np.pi * 50 * t + phase_50hz_1)
         if noise_std1 > 0:
             sig1 += np.random.normal(0, noise_std1, size=len(t))
 
         # CH2 干扰
         if interference_50hz2 > 0:
-            sig2 += interference_50hz2 * np.sin(2 * np.pi * 50 * t)
+            sig2 += interference_50hz2 * np.sqrt(2) * np.sin(2 * np.pi * 50 * t + phase_50hz_2)
         if noise_std2 > 0:
             sig2 += np.random.normal(0, noise_std2, size=len(t))
         

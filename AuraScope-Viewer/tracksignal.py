@@ -245,19 +245,21 @@ class SignalSimulator:
         return t, signal, mod_signal
 
     @staticmethod
-    def generate_25hz_phase(freq=25.0, phase_diff=90.0, duration=1.0, fs=200000, amp1=110.0, amp2=110.0):
+    def generate_25hz_phase(freq=25.0, phase_diff=90.0, duration=1.0, fs=200000, amp1=110.0, amp2=18.0):
         """
         生成 25Hz 相敏轨道电路信号 (纯净版)
+        注: amp1, amp2 视为有效值(RMS)，内部转换为峰值(Peak)计算。
+        局部电压(CH1)超前轨道电压(CH2)约90度，因此CH2公式中使用 -phi
         """
         t = np.linspace(0, duration, int(fs * duration), endpoint=False)
         
         # CH1: 参考信号 (局部电压)
-        sig1 = amp1 * np.sin(2 * np.pi * freq * t)
+        sig1 = amp1 * np.sqrt(2) * np.sin(2 * np.pi * freq * t)
         
         # CH2: 轨道信号 (带相位差)
-        # phase_diff is in degrees
+        # phase_diff is in degrees (CH2滞后于CH1的角度)
         phi = np.deg2rad(phase_diff)
-        sig2 = amp2 * np.sin(2 * np.pi * freq * t + phi)
+        sig2 = amp2 * np.sqrt(2) * np.sin(2 * np.pi * freq * t - phi)
         
         return t, sig1, sig2
 
