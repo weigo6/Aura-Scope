@@ -218,6 +218,158 @@ QLabel#Dashboard {
 }
 """
 
+# --- 样式表 (Light Theme) ---
+LIGHT_STYLESHEET = """
+QMainWindow, QWidget {
+    background-color: #f5f5f5;
+    color: #333333;
+    font-family: "Segoe UI", "Microsoft YaHei";
+    font-size: 9pt;
+}
+
+QGroupBox {
+    border: 1px solid #cccccc;
+    border-radius: 6px;
+    margin-top: 15px;
+    padding-top: 4px;
+    font-weight: bold;
+    background-color: #ffffff;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 10px;
+    padding: 0 3px;
+    color: #00897b; 
+    background-color: #ffffff; 
+}
+
+QPushButton {
+    background-color: #e0e0e0;
+    border: 1px solid #bdbdbd;
+    border-radius: 4px;
+    padding: 6px 12px;
+    color: #000000;
+}
+QPushButton:hover {
+    background-color: #d5d5d5;
+    border-color: #00897b;
+}
+QPushButton:pressed {
+    background-color: #ffffff;
+}
+QPushButton:disabled {
+    background-color: #eeeeee;
+    color: #9e9e9e;
+    border-color: #cccccc;
+}
+
+QComboBox {
+    background-color: #ffffff;
+    border: 1px solid #bdbdbd;
+    border-radius: 4px;
+    padding: 4px;
+    color: #000000;
+}
+QComboBox::drop-down {
+    border: none;
+    width: 20px;
+}
+QComboBox QAbstractItemView {
+    background-color: #ffffff;
+    color: #000000;
+    selection-background-color: #00897b;
+}
+
+QLineEdit {
+    background-color: #ffffff;
+    border: 1px solid #bdbdbd;
+    border-radius: 4px;
+    color: #000000;
+    padding: 4px;
+}
+
+QCheckBox {
+    spacing: 5px;
+}
+QCheckBox::indicator {
+    width: 16px;
+    height: 16px;
+    border: 1px solid #bdbdbd;
+    border-radius: 3px;
+    background: #ffffff;
+}
+QCheckBox::indicator:checked {
+    background-color: rgba(0, 137, 123, 0.15);
+    border-color: #00897b;
+    image: url(check.png);
+}
+
+QRadioButton {
+    spacing: 5px;
+}
+QRadioButton::indicator {
+    width: 16px;
+    height: 16px;
+    border: 1px solid #bdbdbd;
+    border-radius: 8px;
+    background: #ffffff;
+}
+QRadioButton::indicator:checked {
+    border: 1px solid #00897b;
+    border-radius: 8px;
+    background-color: qradialgradient(spread:pad, cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5, stop:0 #00897b, stop:0.5 #00897b, stop:0.6 transparent, stop:1 transparent);
+    image: none;
+}
+
+QSlider::groove:horizontal {
+    border: 1px solid #cccccc;
+    height: 6px;
+    background: #e0e0e0;
+    margin: 2px 0;
+    border-radius: 3px;
+}
+QSlider::handle:horizontal {
+    background: #00897b;
+    border: 1px solid #00897b;
+    width: 10px;
+    height: 10px;
+    margin: -3px 0;
+    border-radius: 5px;
+}
+
+QSplitter::handle {
+    background-color: #d0d0d0;
+}
+QSplitter::handle:horizontal {
+    width: 4px;
+}
+
+QScrollBar:vertical {
+    border: none;
+    background: #f5f5f5;
+    width: 10px;
+    margin: 0px 0px 0px 0px;
+}
+QScrollBar::handle:vertical {
+    background: #bdbdbd;
+    min-height: 20px;
+    border-radius: 5px;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0px;
+}
+
+QLabel#Dashboard {
+    background-color: #ffffff;
+    border: 1px solid #cccccc;
+    border-radius: 6px;
+    padding: 8px;
+    font-family: "Consolas", "Courier New", monospace;
+    font-size: 10pt;
+}
+"""
+
 class SignalSimulator:
     """
     轨道信号模拟器 (内置版)
@@ -728,23 +880,10 @@ class AuraScope(QMainWindow):
         self.setWindowTitle("AuraScope - Track Signal Analyzer")
         self.resize(1280, 800)
         
+        self.is_light_mode = False
+        
         # 处理资源路径和样式表
-        base_dir = os.path.dirname(__file__).replace('\\', '/')
-        
-        # 1. 修正 check.png 路径
-        style = DARK_STYLESHEET.replace("url(check.png)", f"url({base_dir}/check.png)")
-        
-        # 2. 生成并添加 arrow.png 样式
-        self.ensure_arrow_icon()
-        style += f"""
-        QComboBox::down-arrow {{
-            image: url({base_dir}/arrow.png);
-            width: 12px;
-            height: 12px;
-            padding-right: 2px;
-        }}
-        """
-        self.setStyleSheet(style)
+        self.apply_theme()
         
         # 设置窗口图标
         icon_path = os.path.join(os.path.dirname(__file__), "oscilloscope.png")
@@ -838,7 +977,6 @@ class AuraScope(QMainWindow):
         h_port.addWidget(self.cb_port)
         h_port.addWidget(self.btn_refresh)
         self.btn_conn = QPushButton("打开串口")
-        self.btn_conn.setStyleSheet("font-weight: bold; background-color: #2e7d32;")
         self.btn_conn.clicked.connect(self.toggle_serial)
         l_conn.addLayout(h_port)
         l_conn.addWidget(self.btn_conn)
@@ -1001,6 +1139,10 @@ class AuraScope(QMainWindow):
         self.chk_smooth = QCheckBox("波形平滑 (3点)")
         self.chk_smooth.toggled.connect(self.on_smooth_toggled)
         l_view.addWidget(self.chk_smooth)
+
+        self.chk_light_mode = QCheckBox("亮色模式 (Light Mode)")
+        self.chk_light_mode.toggled.connect(self.on_light_mode_toggled)
+        l_view.addWidget(self.chk_light_mode)
         
         gp_view.setLayout(l_view)
         scroll_layout.addWidget(gp_view)
@@ -1025,7 +1167,6 @@ class AuraScope(QMainWindow):
 
         self.btn_help = QPushButton("帮助与说明")
         self.btn_help.clicked.connect(self.show_help)
-        self.btn_help.setStyleSheet("background-color: #0277bd; font-weight: bold;")
         l_act.addWidget(self.btn_help)
 
         gp_act.setLayout(l_act)
@@ -1051,7 +1192,6 @@ class AuraScope(QMainWindow):
         
         self.btn_load_sim = QPushButton("加载仿真")
         self.btn_load_sim.clicked.connect(self.load_simulation)
-        self.btn_load_sim.setStyleSheet("background-color: #512da8; font-weight: bold;")
         h_sim.addWidget(self.btn_load_sim)
         
         l_track.addLayout(h_sim)
@@ -1060,7 +1200,6 @@ class AuraScope(QMainWindow):
         self.btn_detect_50hz = QPushButton("50Hz 工频干扰检测")
         self.btn_detect_50hz.setCheckable(True)
         self.btn_detect_50hz.clicked.connect(self.on_detect_50hz_toggled)
-        self.btn_detect_50hz.setStyleSheet("background-color: #00796b;") 
         l_track.addWidget(self.btn_detect_50hz)
         
         gp_track.setLayout(l_track)
@@ -1116,7 +1255,6 @@ class AuraScope(QMainWindow):
         
         self.btn_auto_zero = QPushButton("自动归零 (Auto Zero)")
         self.btn_auto_zero.clicked.connect(self.on_auto_zero_clicked)
-        self.btn_auto_zero.setStyleSheet("background-color: #5d4037;")
         l_cal.addWidget(self.btn_auto_zero)
 
         # 增益校准 UI
@@ -1132,7 +1270,6 @@ class AuraScope(QMainWindow):
         
         self.btn_auto_gain = QPushButton("自动增益 (Auto Gain)")
         self.btn_auto_gain.clicked.connect(self.on_auto_gain_clicked)
-        self.btn_auto_gain.setStyleSheet("background-color: #455a64;")
         
         h_gain_cal.addWidget(self.spin_ref_vpp)
         h_gain_cal.addWidget(self.btn_auto_gain)
@@ -1246,6 +1383,122 @@ class AuraScope(QMainWindow):
         self.v_line2.sigPositionChanged.connect(self.update_cursor_readout)
         self.h_line1.sigPositionChanged.connect(self.update_cursor_readout)
         self.h_line2.sigPositionChanged.connect(self.update_cursor_readout)
+
+    def apply_theme(self):
+        base_dir = os.path.dirname(__file__).replace('\\', '/')
+        if hasattr(self, 'ensure_arrow_icon'):
+            self.ensure_arrow_icon()
+        
+        if self.is_light_mode:
+            style = LIGHT_STYLESHEET.replace("url(check.png)", f"url({base_dir}/check.png)")
+            bg_color = '#ffffff'
+            fg_color = '#333333'
+            grid_alpha = 0.3
+        else:
+            style = DARK_STYLESHEET.replace("url(check.png)", f"url({base_dir}/check.png)")
+            bg_color = '#1e1e1e'
+            fg_color = '#e0e0e0'
+            grid_alpha = 0.2
+            
+        style += f"""
+        QComboBox::down-arrow {{
+            image: url({base_dir}/arrow.png);
+            width: 12px;
+            height: 12px;
+            padding-right: 2px;
+        }}
+        """
+        self.setStyleSheet(style)
+        
+        if hasattr(self, 'win'):
+            self.win.setBackground(bg_color)
+            
+            # Update plot axes and grids
+            plots = [(self.p_t, "Time Domain"), (self.p_f, "Frequency Domain"), (self.p_demod, "Demodulated Frequency")]
+            for p, title in plots:
+                p.getAxis('left').setPen(fg_color)
+                p.getAxis('left').setTextPen(fg_color)
+                p.getAxis('bottom').setPen(fg_color)
+                p.getAxis('bottom').setTextPen(fg_color)
+                p.showGrid(x=True, y=True, alpha=grid_alpha)
+                p.setTitle(title, color=fg_color)
+                    
+            # Update trigger line
+            if hasattr(self, 'trig_line'):
+                self.trig_line.setPen(pg.mkPen(fg_color, style=Qt.DashLine, width=1))
+                
+            # Update curve colors
+            if self.is_light_mode:
+                ch1_color = '#f57f17' # Darker orange/yellow
+                ch2_color = '#00838f' # Darker cyan
+                inst_f_color = '#1565c0' # Darker blue
+            else:
+                ch1_color = '#ffeb3b'
+                ch2_color = '#00bcd4'
+                inst_f_color = '#448aff'
+                
+            if hasattr(self, 'cur1'):
+                self.cur1.setPen(pg.mkPen(ch1_color, width=1.5))
+                self.cur2.setPen(pg.mkPen(ch2_color, width=1.5))
+                self.f_cur1.setPen(pg.mkPen(ch1_color, width=1.2))
+                self.f_cur2.setPen(pg.mkPen(ch2_color, width=1.2))
+                self.inst_f_cur.setPen(pg.mkPen(inst_f_color, width=1.5))
+                
+            # Update checkbox labels
+            if hasattr(self, 'chk_show_ch1'):
+                self.chk_show_ch1.setStyleSheet(f"color: {ch1_color}; font-weight: bold;")
+                self.chk_show_ch2.setStyleSheet(f"color: {ch2_color}; font-weight: bold;")
+                
+            # Update button colors based on theme
+            if hasattr(self, 'btn_conn'):
+                if getattr(self, 'is_connected', False):
+                    bg_conn = "#ef9a9a" if self.is_light_mode else "#c62828"
+                else:
+                    bg_conn = "#a5d6a7" if self.is_light_mode else "#2e7d32"
+                self.btn_conn.setStyleSheet(f"font-weight: bold; background-color: {bg_conn};")
+                
+            if hasattr(self, 'btn_pause') and getattr(self, 'paused', False):
+                bg_pause = "#ef9a9a" if self.is_light_mode else "#c62828"
+                self.btn_pause.setStyleSheet(f"background-color: {bg_pause}; font-weight: bold;")
+                
+            if hasattr(self, 'btn_help'):
+                bg_help = "#81d4fa" if self.is_light_mode else "#0277bd"
+                self.btn_help.setStyleSheet(f"background-color: {bg_help}; font-weight: bold;")
+                
+            if hasattr(self, 'btn_load_sim'):
+                bg_sim = "#b39ddb" if self.is_light_mode else "#512da8"
+                self.btn_load_sim.setStyleSheet(f"background-color: {bg_sim}; font-weight: bold;")
+                
+            if hasattr(self, 'btn_detect_50hz'):
+                bg_50hz = "#80cbc4" if self.is_light_mode else "#00796b"
+                self.btn_detect_50hz.setStyleSheet(f"background-color: {bg_50hz};")
+                
+            if hasattr(self, 'btn_auto_zero'):
+                bg_zero = "#bcaaa4" if self.is_light_mode else "#5d4037"
+                self.btn_auto_zero.setStyleSheet(f"background-color: {bg_zero};")
+                
+            if hasattr(self, 'btn_auto_gain'):
+                bg_gain = "#b0bec5" if self.is_light_mode else "#455a64"
+                self.btn_auto_gain.setStyleSheet(f"background-color: {bg_gain};")
+
+    def on_light_mode_toggled(self, checked):
+        self.is_light_mode = checked
+        self.apply_theme()
+        if self.last_view_ch1 is not None:
+            # 恢复当前数据并重绘，以更新图表和仪表盘颜色
+            self.process_and_plot(self.last_view_ch1, self.last_view_ch2, self.last_fs)
+        else:
+            # 没有数据时，刷新空闲提示文本颜色
+            fg_color = '#333333' if self.is_light_mode else '#666666'
+            msg = "Connected. Waiting for data..." if self.is_connected else "No Device Connected"
+            self.lbl_dash.setText(f"""
+                <table width='100%'>
+                <tr><td align='center' style='padding-top:40px; color:{fg_color}; font-size:14px'>
+                    <b>AuraScope Pro</b><br>
+                    <span style='font-size:11px'>{msg}</span>
+                </td></tr>
+                </table>
+            """)
 
     def load_config(self):
         path = os.path.join(os.path.dirname(__file__), "calibration.json")
@@ -1456,7 +1709,8 @@ class AuraScope(QMainWindow):
         
         # 更新状态提示
         if not self.paused:
-             self.lbl_dash.setText("<br><br><center><span style='color:#4db6ac; font-size:11pt'>Waiting for data...</span></center>")
+             c_text = '#00796b' if getattr(self, 'is_light_mode', False) else '#4db6ac'
+             self.lbl_dash.setText(f"<br><br><center><span style='color:{c_text}; font-size:11pt'>Waiting for data...</span></center>")
 
     def on_zpw_mode_toggled(self, checked):
         """切换 ZPW 模式时提供 UI 反馈"""
@@ -1467,7 +1721,8 @@ class AuraScope(QMainWindow):
             if self.chk_25hz_mode.isChecked():
                 self.chk_25hz_mode.setChecked(False)
 
-            self.lbl_dash.setText("<br><br><center><span style='color:#ff9800; font-size:12pt'><b>Running ZPW Analysis...</b></span><br><span style='color:#888'>This may take a moment for large datasets.</span></center>")
+            c_text = '#e65100' if getattr(self, 'is_light_mode', False) else '#ff9800'
+            self.lbl_dash.setText(f"<br><br><center><span style='color:{c_text}; font-size:12pt'><b>Running ZPW Analysis...</b></span><br><span style='color:#888'>This may take a moment for large datasets.</span></center>")
             self.lbl_dash.repaint()
             QApplication.processEvents()
             
@@ -1480,7 +1735,8 @@ class AuraScope(QMainWindow):
             if self.btn_detect_50hz.isChecked():
                 self.btn_detect_50hz.setChecked(False)
                 
-            self.lbl_dash.setText("<br><br><center><span style='color:#ab47bc; font-size:12pt'><b>Analyzing 25Hz Phase Sensitive...</b></span></center>")
+            c_text = '#6a1b9a' if getattr(self, 'is_light_mode', False) else '#ab47bc'
+            self.lbl_dash.setText(f"<br><br><center><span style='color:{c_text}; font-size:12pt'><b>Analyzing 25Hz Phase Sensitive...</b></span></center>")
             self.lbl_dash.repaint()
             QApplication.processEvents()
         self.reprocess_view()
@@ -1493,7 +1749,8 @@ class AuraScope(QMainWindow):
             if self.chk_25hz_mode.isChecked():
                 self.chk_25hz_mode.setChecked(False)
             
-            self.lbl_dash.setText("<br><br><center><span style='color:#00796b; font-size:12pt'><b>Analyzing 50Hz Interference...</b></span></center>")
+            c_text = '#00796b' if getattr(self, 'is_light_mode', False) else '#00796b'
+            self.lbl_dash.setText(f"<br><br><center><span style='color:{c_text}; font-size:12pt'><b>Analyzing 50Hz Interference...</b></span></center>")
             self.lbl_dash.repaint()
             QApplication.processEvents()
         self.reprocess_view()
@@ -1585,7 +1842,8 @@ class AuraScope(QMainWindow):
             
         if checked:
             self.btn_pause.setText("继续 (RESUME)")
-            self.btn_pause.setStyleSheet("background-color: #c62828; font-weight: bold;")
+            bg_color = "#ef9a9a" if getattr(self, 'is_light_mode', False) else "#c62828"
+            self.btn_pause.setStyleSheet(f"background-color: {bg_color}; font-weight: bold;")
         else:
             self.btn_pause.setText("暂停 (PAUSE)")
             self.btn_pause.setStyleSheet("")
@@ -1599,19 +1857,23 @@ class AuraScope(QMainWindow):
             self.worker.packet_ready.connect(self.handle_packet)
             self.worker.start()
             self.btn_conn.setText("断开连接")
-            self.btn_conn.setStyleSheet("font-weight: bold; background-color: #c62828;")
+            bg_color = "#ef9a9a" if getattr(self, 'is_light_mode', False) else "#c62828"
+            self.btn_conn.setStyleSheet(f"font-weight: bold; background-color: {bg_color};")
             self.cb_port.setEnabled(False)
             self.btn_refresh.setEnabled(False)
             self.is_connected = True
-            self.lbl_dash.setText("<span style='color:#4db6ac'>Connected. Waiting for data...</span>")
+            c_text = '#00796b' if getattr(self, 'is_light_mode', False) else '#4db6ac'
+            self.lbl_dash.setText(f"<span style='color:{c_text}'>Connected. Waiting for data...</span>")
         else:
             self.worker.stop()
             self.btn_conn.setText("打开串口")
-            self.btn_conn.setStyleSheet("font-weight: bold; background-color: #2e7d32;")
+            bg_color = "#a5d6a7" if getattr(self, 'is_light_mode', False) else "#2e7d32"
+            self.btn_conn.setStyleSheet(f"font-weight: bold; background-color: {bg_color};")
             self.cb_port.setEnabled(True)
             self.btn_refresh.setEnabled(True)
             self.is_connected = False
-            self.lbl_dash.setText("<span style='color:#777'>Offline</span>")
+            c_text = '#666' if getattr(self, 'is_light_mode', False) else '#777'
+            self.lbl_dash.setText(f"<span style='color:{c_text}'>Offline</span>")
 
     @Slot(np.ndarray, np.ndarray, int)
     def handle_packet(self, ch1_raw, ch2_raw, tb_idx):
@@ -1900,10 +2162,27 @@ class AuraScope(QMainWindow):
         elif span_s >= 1e-3: span_str = f"{span_s*1000:.2f}ms"
         else: span_str = f"{span_s*1e6:.2f}us"
 
-        style_y = "color:#ffeb3b; font-weight:bold"
-        style_c = "color:#00bcd4; font-weight:bold"
-        style_w = "color:#e0e0e0"
-        style_g = "color:#4db6ac"
+        is_light = getattr(self, 'is_light_mode', False)
+        c_ch1 = "#f57f17" if is_light else "#ffeb3b"
+        c_ch2 = "#00838f" if is_light else "#00bcd4"
+        c_text = "#333333" if is_light else "#e0e0e0"
+        c_dim = "#666666" if is_light else "#888888"
+        c_dim2 = "#555555" if is_light else "#aaaaaa"
+        c_border = "#cccccc" if is_light else "#444444"
+        c_green = "#00796b" if is_light else "#4db6ac"
+        c_fc_clr = "#1565c0" if is_light else "#448aff"
+        c_fm_clr = "#e65100" if is_light else "#ff9800"
+        c_desc = "#444444" if is_light else "#dddddd"
+        c_purple = "#6a1b9a" if is_light else "#ab47bc"
+        c_magenta = "#9c27b0" if is_light else "#e040fb"
+        c_x_cur = "#c51162" if is_light else "#ff00ff"
+        c_y_cur = "#2e7d32" if is_light else "#00ff00"
+        c_red = "#d32f2f" if is_light else "#ff5252"
+
+        style_y = f"color:{c_ch1}; font-weight:bold"
+        style_c = f"color:{c_ch2}; font-weight:bold"
+        style_w = f"color:{c_text}"
+        style_g = f"color:{c_green}"
         
         # 动态调整布局：如果有光标，使用紧凑模式；否则使用舒适模式
         has_cursors = self.chk_cursors_x.isChecked() or self.chk_cursors_y.isChecked()
@@ -1916,7 +2195,7 @@ class AuraScope(QMainWindow):
         html = f"""
         <table width="100%" cellspacing="0" cellpadding="0" style="font-size:9pt; line-height:{line_height}; table-layout:fixed">
         <tr>
-            <td colspan="4" style="{style_g}; border-bottom:1px solid #444; padding-bottom:1px">
+            <td colspan="4" style="{style_g}; border-bottom:1px solid {c_border}; padding-bottom:1px">
                 FS: {int(fs/1000)}kS/s | Span: {span_str}
             </td>
         </tr>
@@ -1952,32 +2231,32 @@ class AuraScope(QMainWindow):
             # 载频部分
             if std_fc:
                 disp_fc = f"{label_fc} {std_fc}"
-                color_fc = "#448aff"
+                color_fc = c_fc_clr
             else:
                 disp_fc = "未知"
-                color_fc = "#888"
+                color_fc = c_dim
             
             # 低频部分
             if std_fm:
                 code, desc = info_fm
                 disp_fm = f"{code} {std_fm}"
                 disp_desc = desc
-                color_fm = "#ff9800"
+                color_fm = c_fm_clr
             else:
                 disp_fm = "未知"
                 disp_desc = ""
-                color_fm = "#888"
+                color_fm = c_dim
 
             # 格式化显示: ZPW [Carrier] ([Meas]) | [Code] [Freq] ([Meas]) [Desc]
             html += f"""
             <tr>
-                <td colspan="4" style="border-top:1px solid #444; padding-top:4px; font-size:10pt">
+                <td colspan="4" style="border-top:1px solid {c_border}; padding-top:4px; font-size:10pt">
                     <span style="color:{color_fc}"><b>ZPW {disp_fc}</b></span> 
-                    <span style="color:#aaa; font-size:9pt">({zpw_fc:.1f}Hz)</span>
-                    <span style="color:#666"> | </span>
+                    <span style="color:{c_dim2}; font-size:9pt">({zpw_fc:.1f}Hz)</span>
+                    <span style="color:{c_dim}"> | </span>
                     <span style="color:{color_fm}"><b>{disp_fm}</b></span>
-                    <span style="color:#aaa; font-size:9pt">({zpw_fm:.2f})</span>
-                    <span style="color:#ddd; font-size:9pt"> {disp_desc}</span>
+                    <span style="color:{c_dim2}; font-size:9pt">({zpw_fm:.2f})</span>
+                    <span style="color:{c_desc}; font-size:9pt"> {disp_desc}</span>
                 </td>
             </tr>
             """
@@ -1994,31 +2273,31 @@ class AuraScope(QMainWindow):
             # 计算相位差 (CH2 relative to CH1)
             phase = SignalProcessor.phase_fft(v1_p, v2_p, fs, freq_hint=25.0)
             
-            c1 = "#ff5252" if r50_1 > 5.0 else "#888"
-            c2 = "#ff5252" if r50_2 > 5.0 else "#888"
+            c1 = c_red if r50_1 > 5.0 else c_dim
+            c2 = c_red if r50_2 > 5.0 else c_dim
 
             # 25Hz 分析行
             html += f"""
             <tr>
-                <td colspan="4" style="border-top:1px solid #444; padding-top:2px; font-size:9pt">
-                    <span style="color:#ab47bc; font-weight:bold">25Hz Analysis</span>
-                    <span style="color:#666; font-size:8pt; float:right"> (RMS & 50Hz & Phase)</span>
+                <td colspan="4" style="border-top:1px solid {c_border}; padding-top:2px; font-size:9pt">
+                    <span style="color:{c_purple}; font-weight:bold">25Hz Analysis</span>
+                    <span style="color:{c_dim}; font-size:8pt; float:right"> (RMS & 50Hz Peak & Phase)</span>
                 </td>
             </tr>
             <tr>
                 <td style="{style_y}">CH1</td>
                 <td colspan="3" style="{style_w}">
-                    RMS:<b>{fmt(rms1, '5.1f')}V</b> <span style="color:#666">|</span> 50Hz:<span style="color:{c1}">{fmt(v50_1, '4.1f')}V ({fmt(r50_1, '3.0f')}%)</span>
-                    <span style="color:#666">&nbsp;|&nbsp;</span>
-                    <span style="color:#888; font-size:9pt">Ref: 0°</span>
+                    RMS:<b>{fmt(rms1, '5.1f')}V</b> <span style="color:{c_dim}">|</span> 50Hz(Peak):<span style="color:{c1}">{fmt(v50_1, '4.1f')}V ({fmt(r50_1, '3.0f')}%)</span>
+                    <span style="color:{c_dim}">&nbsp;|&nbsp;</span>
+                    <span style="color:{c_dim}; font-size:9pt">Ref: 0°</span>
                 </td>
             </tr>
             <tr>
                 <td style="{style_c}">CH2</td>
                 <td colspan="3" style="{style_w}">
-                    RMS:<b>{fmt(rms2, '5.1f')}V</b> <span style="color:#666">|</span> 50Hz:<span style="color:{c2}">{fmt(v50_2, '4.1f')}V ({fmt(r50_2, '3.0f')}%)</span>
-                    <span style="color:#666">&nbsp;|&nbsp;</span>
-                    <span style="color:#e040fb; font-weight:bold">Diff: {fmt(phase, '5.1f')}°</span>
+                    RMS:<b>{fmt(rms2, '5.1f')}V</b> <span style="color:{c_dim}">|</span> 50Hz(Peak):<span style="color:{c2}">{fmt(v50_2, '4.1f')}V ({fmt(r50_2, '3.0f')}%)</span>
+                    <span style="color:{c_dim}">&nbsp;|&nbsp;</span>
+                    <span style="color:{c_magenta}; font-weight:bold">Diff: {fmt(phase, '5.1f')}°</span>
                 </td>
             </tr>
             """
@@ -2029,17 +2308,17 @@ class AuraScope(QMainWindow):
             v50_2, r50_2, h_2 = SignalProcessor.detect_power_interference(v2_p, fs)
             
             # 定义警告颜色 (如果占比超过 5% 则变红)
-            c1 = "#ff5252" if r50_1 > 5.0 else "#888"
-            c2 = "#ff5252" if r50_2 > 5.0 else "#888"
+            c1 = c_red if r50_1 > 5.0 else c_dim
+            c2 = c_red if r50_2 > 5.0 else c_dim
             
             html += f"""
             <tr>
-                <td colspan="4" style="border-top:1px solid #444; padding-top:2px; font-size:9pt">
-                    <b style="color:#00796b">50Hz Check:</b><br>
-                    <span style="color:#ffeb3b">CH1:</span> <span style="color:{c1}">50 Hz 干扰 {fmt(v50_1, '4.2f')}V ({fmt(r50_1, '4.1f')}%)</span> 
-                    <span style="color:#666">谐波: {h_1}</span><br>
-                    <span style="color:#00bcd4">CH2:</span> <span style="color:{c2}">50 Hz 干扰 {fmt(v50_2, '4.2f')}V ({fmt(r50_2, '4.1f')}%)</span>
-                    <span style="color:#666">谐波: {h_2}</span>
+                <td colspan="4" style="border-top:1px solid {c_border}; padding-top:2px; font-size:9pt">
+                    <b style="color:{c_green}">50Hz Check:</b><br>
+                    <span style="{style_y}">CH1:</span> <span style="color:{c1}">50 Hz 干扰(Peak) {fmt(v50_1, '4.2f')}V ({fmt(r50_1, '4.1f')}%)</span> 
+                    <span style="color:{c_dim}">谐波: {h_1}</span><br>
+                    <span style="{style_c}">CH2:</span> <span style="color:{c2}">50 Hz 干扰(Peak) {fmt(v50_2, '4.2f')}V ({fmt(r50_2, '4.1f')}%)</span>
+                    <span style="color:{c_dim}">谐波: {h_2}</span>
                 </td>
             </tr>
             """
@@ -2051,7 +2330,7 @@ class AuraScope(QMainWindow):
         if self.chk_cursors_x.isChecked():
             if not has_cursor:
                 # 移除额外高度，仅保留分割线
-                html += f"<tr><td colspan='4' style='border-top:1px solid #444;'></td></tr>"
+                html += f"<tr><td colspan='4' style='border-top:1px solid {c_border};'></td></tr>"
                 has_cursor = True
                 
             t1 = self.v_line1.value()
@@ -2060,7 +2339,7 @@ class AuraScope(QMainWindow):
             
             html += f"""
             <tr>
-                <td colspan="4" style="color:#ff00ff; white-space:nowrap; font-size:9pt">
+                <td colspan="4" style="color:{c_x_cur}; white-space:nowrap; font-size:9pt">
                     <b>[X]</b> T1:{t1*1000:.1f}m | T2:{t2*1000:.1f}m | <b>Δ:{dt*1000:.1f}ms</b>
                 </td>
             </tr>
@@ -2069,7 +2348,7 @@ class AuraScope(QMainWindow):
         # Y轴光标
         if self.chk_cursors_y.isChecked():
             if not has_cursor:
-                html += f"<tr><td colspan='4' style='border-top:1px solid #444;'></td></tr>"
+                html += f"<tr><td colspan='4' style='border-top:1px solid {c_border};'></td></tr>"
                 has_cursor = True
                 
             v1_c = self.h_line1.value()
@@ -2078,7 +2357,7 @@ class AuraScope(QMainWindow):
             
             html += f"""
             <tr>
-                <td colspan="4" style="color:#00ff00; white-space:nowrap; font-size:9pt">
+                <td colspan="4" style="color:{c_y_cur}; white-space:nowrap; font-size:9pt">
                     <b>[Y]</b> V1:{v1_c:.1f}V | V2:{v2_c:.1f}V | <b>Δ:{dv:.2f}V</b>
                 </td>
             </tr>
@@ -2087,7 +2366,7 @@ class AuraScope(QMainWindow):
         # 如果没有开启任何光标且不是 50Hz 模式，显示极值统计填补空白
         if not has_cursor and not is_50hz:
              html += f"""
-            <tr><td colspan='4' style='border-top:1px solid #444;'></td></tr>
+            <tr><td colspan='4' style='border-top:1px solid {c_border};'></td></tr>
             <tr>
                 <td style="{style_y}">CH1</td>
                 <td style="{style_w}">Max:{v_max1:.1f}V</td>
